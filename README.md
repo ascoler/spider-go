@@ -1,2 +1,32 @@
-# spider-go
-Go Distributed Crawler - multi-service web crawling system implementing producer-consumer pattern. Includes:      Crawler Service - HTML parsing &amp; link extraction      Queue Service - Redis-based URL management      Storage Service - MySQL data persistence      gRPC inter-service communication      Concurrent workers for parallel processing
+🕷️ Spider-Go
+
+Умный сборщик ссылок из интернета
+
+Простая система, которая автоматически находит все ссылки на веб-страницах. Как цифровой детектив, который исследует сайты и составляет карту всех переходов.
+🔧 Что делает:
+
+    📍 Находит все ссылки на странице
+
+    🚀 Работает быстро (несколько страниц одновременно)
+
+    💾 Сохраняет всё в базу данных
+
+    🔄 Сам распределяет задачи между рабочими
+
+🎯 Простое объяснение:
+
+    Даёшь стартовую ссылку
+
+    Система читает страницу и находит все ссылки
+
+    Новые ссылки добавляет в очередь
+
+    Повторяет для следующих страниц
+
+💡 Зачем нужно:
+
+    Узнать, куда ведут все ссылки на сайте
+
+    Найти скрытые разделы
+
+    Построить карту сайта
