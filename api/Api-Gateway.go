@@ -5,7 +5,7 @@ import (
 	pb "local/crawler/internal/gen/crawler"
 	"log"
 	"time"
-
+	"strings"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
 )
@@ -15,48 +15,45 @@ type Link struct {
 	Depth string `json:"depth"` 
 }
 
+var crawlerClient pb.CrawlerServiceClient
+
+func init() {
+	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	if err != nil {
+		log.Fatal("Connection failed:", err)
+	}
+	crawlerClient = pb.NewCrawlerServiceClient(conn)
+}
+
 func Analysis_Link(c *gin.Context) {
 	var data Link
 	
-
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(400, gin.H{"error": "Invalid JSON"})
 		return
 	}
 
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
-	if err != nil {
-		log.Fatal("Connection failed:", err)
+	// Валидация URL
+	if data.Url == "" || (!strings.HasPrefix(data.Url, "http://") && !strings.HasPrefix(data.Url, "https://")) {
+		c.JSON(400, gin.H{"error": "Invalid URL"})
+		return
 	}
-	defer conn.Close()
-	
-	client := pb.NewCrawlerServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 300*time.Second)
 	defer cancel()
 	
-	resp, err := client.StartCrawling(ctx, &pb.StartCrawlingRequest{
+	resp, err := crawlerClient.StartCrawling(ctx, &pb.StartCrawlingRequest{
 		SeedUrls: []string{data.Url},
-		Config: &pb.Config{
-			MaxDepth:       3,
-			MaxPages:       100,
-			WorkerPoolSize: 10,
-			RequestTimeout: 5,
-			MaxRetries:     3,
-			RetryDelay:     2,
-			RateLimitDelay: 1,
-			StorageType:    "in-memory",
-			LogLevel:       "info",
-			OutputFile:     "output.json",
-		},
+		MaxPages: 20, 
 	})
 	
 	if err != nil {
+		log.Printf("❌ Crawling error: %v", err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	
-	log.Printf("✅ Success! Job ID: %s, Status: %s", resp.GetJobId(), resp.GetStatus())
-	
+	log.Printf("✅ Success! Status: %s", resp.GetStatus())
 	
 	c.JSON(200, gin.H{
 		"job_id": resp.GetJobId(),
@@ -68,5 +65,12 @@ func Analysis_Link(c *gin.Context) {
 func main() {
 	r := gin.Default()
 	r.POST("/Analysis_Link", Analysis_Link)
+	
+	
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "OK"})
+	})
+	
+	log.Println("🚀 API Gateway starting on port 8080...")
 	r.Run(":8080")
 }
