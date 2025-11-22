@@ -2,28 +2,35 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"time"
 	"encoding/json"
-	"net"
+	"fmt"
 	pb "local/crawler/internal/gen/crawler"
 	queue "local/crawler/internal/gen/queue"
 	storage "local/crawler/internal/gen/storage"
+	"log"
+	"net"
+	"net/http"
+	
+	"os"
+	"strings"
+	"sync"
+	"time"
+    
+    "os/signal"
+    "syscall"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/hashicorp/golang-lru/v2"
+	"github.com/tylertreat/BoomFilters"
 	"google.golang.org/grpc"
-	
-	
-	
 )
 type CrawlerServer struct {
     pb.UnimplementedCrawlerServiceServer
     queueClient   queue.QueueServiceClient
     storageClient storage.StorageServiceClient
     config        Config
+    urlCache    *lru.Cache[string,string]
+    filter *boom.BloomFilter
+    
 }
 
 
@@ -31,15 +38,58 @@ func NewCrawlerServer(
     queueClient queue.QueueServiceClient,
     storageClient storage.StorageServiceClient,
     config Config,
+  
+
+   
 ) *CrawlerServer {
+    cache, err := lru.New[string, string](50000)
+    if err != nil {
+        panic(err)
+    }
+    filter := boom.NewBloomFilter(100000, 0.01)
     return &CrawlerServer{
         queueClient:   queueClient,
         storageClient: storageClient,
         config:        config,
+        urlCache: cache,
+        filter:  filter,
+        
     }
 }
 
+type CrawlState struct {
+            mu sync.RWMutex
+            visited map[string]bool
+            processed int
+            maxpages int
+            
+        }
+func(s *CrawlState) ShouldProcess(url string) bool{
+       s.mu.RLock()
+        if s.processed >= s.maxpages {
+        s.mu.RUnlock()
+        return false
+        }
+        s.mu.RUnlock()
+    
+    
+       s.mu.RLock()
+        if s.visited[url]{
+        s.mu.RUnlock()
+        return false
+       }
+       s.mu.RUnlock()
 
+
+       s.mu.Lock()
+       defer s.mu.Unlock()
+       s.visited[url] = true
+       s.processed++
+       return true
+
+    
+
+}
 
 
 
@@ -74,16 +124,36 @@ func Get_Config() (Config,error){
 	
 
 }
+func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (bool, error) {
+  
+   
 
-func checkLink(url string) bool {
-    res, err := http.Get(url)
-    if err != nil {
-        log.Printf("Failed to connect to %s: %v", url, err)
-        return false
-    }
-    defer res.Body.Close() 
     
-    return res.StatusCode < 400
+    if !s.filter.Test([]byte(url)) {
+        return false, nil
+    }
+
+  
+    if _, ok := s.urlCache.Get(url); ok {
+        return true, nil
+    }
+
+ 
+    check, err := s.storageClient.CheckPageExists(ctx, &storage.CheckPageRequest{
+        Url: url,
+    })
+    if err != nil {
+        return false, fmt.Errorf("storage error: %v", err)
+    }
+
+    
+    if check.Exists {
+        s.urlCache.Add(url, check.PageId)
+        
+        s.filter.Add([]byte(url))
+    }
+
+    return check.Exists, nil
 }
 func ResolveLink(url string) bool{
 	return strings.HasPrefix(url,"http://") || 
@@ -156,26 +226,78 @@ func (s *CrawlerServer) push_work(ctx context.Context,queue_name string,urls []s
 
 
 }
-func (s *CrawlerServer) CreateWorker(jobs <-chan string, result chan<- string, newLinks chan<- string){
-    context := context.Background()
-    for url := range jobs {
-        links,title,content := s.AnalysisLink(context,url, 1) 
-        result <- fmt.Sprintf("✅ Worker %s done: %d links, title: %s", url, len(links), title)
-        
-        
-        for _, link := range links {
-            newLinks <- link
+func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan <- string, jobs <-chan string, result chan<- string, newLinks chan<- string){
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("⚠️ Worker recovered from panic: %v", r)
         }
-        if len(content) > 100 {
-            log.Printf("Content preview: %s...", content[:100])
+    }()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case url, ok := <-jobs:
+            if !ok {
+                return
+            }
+            
+            
+            func() {
+                defer func() {
+                    if r := recover(); r != nil {
+                        log.Printf("❌ Worker panic while processing %s: %v", url, r)
+                    }
+                }()
+                
+                links, title, content := s.AnalysisLink(ctx, url, 3)
+                select {
+                case result <- fmt.Sprintf("✅ Worker %s done: %d links, title: %s", url, len(links), title):
+                case <-ctx.Done():
+                    return
+                }
+                
+                for _, link := range links {
+                    select {
+                    case newLinks <- link:
+                    case <-ctx.Done():
+                        return
+                    }
+                }
+                if len(content) > 100 {
+                    select {
+                    case ALLcontent <- content:
+                    case <-ctx.Done():
+                        return
+                    }
+                }
+            }()
         }
     }
-}
+}    
+
 func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int) ([]string, string, string) {
 	if depth <= 0 {
 		return []string{}, "", ""
 	}
-	
+    if s.storageClient == nil {
+        log.Printf("❌ Storage client is nil for URL: %s", url)
+        return []string{}, "", ""
+    }
+    exists,err := s.CheckPageExists(ctx,url)
+    if err != nil{
+        log.Printf("Error %v",err)
+
+    }else if exists {
+        se,err := s.storageClient.GetPage(ctx,&storage.GetPageRequest{
+            Url: url,
+
+        })
+        if err != nil{
+            log.Printf("Error %v",err)
+        }
+        return  []string{},se.Page.Title,se.Page.ContentText
+    }
 	res, err := http.Get(url)
 	var links []string
 	var titleBuilder, contentBuilder strings.Builder
@@ -275,107 +397,175 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	if err != nil {
 		log.Printf("Failed to save page to storage: %v", err)
 	} else {
+        s.filter.Add([]byte(url))
+        s.urlCache.Add(url,content)
 		log.Printf("✅ Page saved to storage: %s", url)
 	}
 	
 	return links, title, content
 }
 
-func (s *CrawlerServer) StartCrawling(ctx context.Context, req *pb.StartCrawlingRequest) (*pb.StartCrawlingResponse, error) {
+func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCrawlingRequest) (*pb.StartCrawlingResponse, error) {
     config, err := Get_Config()
     if err != nil {
         log.Fatal("Error")
     }
+    
+    ctx, cancel := context.WithCancel(parentCtx)
+    var wg sync.WaitGroup
+    defer cancel()
 
-    jobs := make(chan string, 1000)
-    results := make(chan string, 1000)
-    newLinks := make(chan string, 10000)
-
-   
-    for w := 1; w <= config.WORKER_POOL_SIZE; w++ {
-        go s.CreateWorker(jobs, results, newLinks)
+    maxPages := config.MAX_PAGES 
+    if req.MaxPages > 0 {
+        maxPages = int(req.MaxPages)
     }
 
-    
+    jobs := make(chan string, 5000)
+    results := make(chan string, 1000)
+    newLinks := make(chan string, 10000)
+    ALLcontent := make(chan string,10000)
+
+    if len(req.SeedUrls) > 0 {
+        err := s.push_work(ctx, "crawl_queue", req.SeedUrls)
+        if err != nil {
+            log.Printf("❌ Failed to add seed URLs: %v", err)
+        } else {
+            log.Printf("✅ Added %d seed URLs to queue", len(req.SeedUrls))
+        }
+    }
+
+  
+    for w := 1; w <= config.WORKER_POOL_SIZE; w++ {
+        wg.Add(1)
+        go func(){
+            defer wg.Done()
+            s.CreateWorker(ctx, ALLcontent, jobs, results, newLinks)
+        }()
+    }
+
     go func() {
         for result := range results {
-			
             log.Println(result)
         }
     }()
-
-   
+    
+    var allContent []string
+    var contentMutex sync.Mutex
+    
     go func() {
-        visited := make(map[string]bool)
-        message,err := s.TakeJobs(ctx,jobs,"crawl_queue")
-		if err != nil {
-        log.Printf("Ошибка TakeJobs: %v", err)
-    	} else {
-        log.Printf("TakeJobs: %s", message)
-    	}
+        for content := range ALLcontent {
+            contentMutex.Lock()
+            allContent = append(allContent, content)
+            contentMutex.Unlock()
+            if len(content) > 100 {
+                log.Printf("📄 Получен контент: %s...", content[:100])
+            }
+        }
+    }()
+    
+    state := &CrawlState{
+        visited: make(map[string]bool),
+        maxpages: maxPages,
+    }
+    
+    done := make(chan bool)
+    
+    go func() {
+        ticker := time.NewTicker(2 * time.Second)
+        defer ticker.Stop()
         
-        
-
-        
-
-       
-        timeout := time.After(30 * time.Second)
+        idleCounter := 0
+        maxIdleCount := 5
         
         for {
             select {
-			case <-ctx.Done():
-        		return 
-            case <-timeout:
-                log.Printf("crawling completed by timeout")
-                close(jobs)
-                close(results)
-                close(newLinks)
+            case <-ctx.Done():
+                log.Println("Context cancelled")
+                close(done)
                 return
                 
-            case link := <-newLinks:
-                if !visited[link] && len(visited) < config.MAX_PAGES {
-                    visited[link] = true
-                    err := s.push_work(ctx,"crawl_queue",[]string{link})
-					if err != nil{
-						log.Printf("Ошибка push_work: %v ", err)
-					}
-                    
-                    
+            case <-ticker.C:
+                message, err := s.TakeJobs(ctx, jobs, "crawl_queue")
+                if err != nil {
+                    log.Printf("Ошибка TakeJobs: %v", err)
+                } else if message != "Очередь пуста" {
+                    log.Printf("TakeJobs: %s", message)
+                    idleCounter = 0
+                } else {
+                    idleCounter++
                 }
-			default:
-				time.Sleep(100 * time.Millisecond)
+                
+            case link := <-newLinks:
+                idleCounter = 0
+                
+                if state.ShouldProcess(link) {
+                    err := s.push_work(ctx, "crawl_queue", []string{link})
+                    if err != nil {
+                        log.Printf("Ошибка push_work: %v", err)
+                    } else {
+                        log.Printf("📄 Добавлена страница %d/%d: %s", state.processed, maxPages, link)
+                    }
+                }
+                
+                if state.processed >= maxPages {
+                    log.Printf("✅ Достигнут лимит в %d страниц", maxPages)
+                    cancel()
+                    close(done)
+                    return
+                }
             }
-			
+            
+            if idleCounter >= maxIdleCount {
+                log.Printf("Завершение по бездействию")
+                cancel()
+                close(done)
+                return
+            }
         }
     }()
-
+    
+    <-done
+    
+    
+    close(jobs)
+    wg.Wait()
+    close(results)
+    close(newLinks)
+    close(ALLcontent)
+    
     return &pb.StartCrawlingResponse{
-        
-        Status: "started",
+        Content: allContent,
+        Status: fmt.Sprintf("Completed: %d pages", state.processed),
     }, nil
 }
-
-
-func main(){
-	
-	
+func main() {
     queueConn, err := grpc.Dial("localhost:50052", grpc.WithInsecure())
     if err != nil {
         log.Fatalf("❌ Failed to connect to queue: %v", err)
     }
     defer queueConn.Close()
     
+    storageConn, err := grpc.Dial("localhost:50053", grpc.WithInsecure())
+    if err != nil {
+        log.Fatalf("❌ Failed to connect to storage: %v", err)
+    }
+    defer storageConn.Close()
+    
     config, err := Get_Config()
     if err != nil {
         log.Fatalf("❌ Failed to load config: %v", err)
     }
     
-    
     crawlerServer := NewCrawlerServer(
         queue.NewQueueServiceClient(queueConn),
-        nil, 
+        storage.NewStorageServiceClient(storageConn),
         config,
     )
+    
+    if crawlerServer.storageClient == nil {
+        log.Fatalf("❌ Storage client is nil!")
+    }
+    log.Printf("✅ Storage client initialized")
     
     lis, err := net.Listen("tcp", ":50051")
     if err != nil {
@@ -385,10 +575,21 @@ func main(){
     grpcServer := grpc.NewServer()
     pb.RegisterCrawlerServiceServer(grpcServer, crawlerServer) 
     
+    
+    stop := make(chan os.Signal, 1)
+    signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+    
+    go func() {
+        <-stop  
+        log.Println("🛑 Received shutdown signal...")
+        log.Println("⏳ Gracefully stopping gRPC server...")
+        grpcServer.GracefulStop()  
+        log.Println("✅ gRPC server stopped")
+    }()
+    
     log.Printf("🚀 gRPC Server starting on port 50051...")
     if err := grpcServer.Serve(lis); err != nil {
         log.Fatalf("❌ Server failed: %v", err)
     }
-
 }
 
