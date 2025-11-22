@@ -426,13 +426,19 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
     ALLcontent := make(chan string,10000)
 
     if len(req.SeedUrls) > 0 {
-        err := s.push_work(ctx, "crawl_queue", req.SeedUrls)
-        if err != nil {
-            log.Printf("❌ Failed to add seed URLs: %v", err)
-        } else {
-            log.Printf("✅ Added %d seed URLs to queue", len(req.SeedUrls))
-        }
+    
+    s.queueClient.ClearQueue(ctx,&queue.ClearQueueRequest{
+        QueueName: "crawl_queue",
+    })
+    
+    
+    err := s.push_work(ctx, "crawl_queue", req.SeedUrls)
+    if err != nil {
+        log.Printf("❌ Failed to add seed URLs: %v", err)
+    } else {
+        log.Printf("✅ Added %d seed URLs to queue", len(req.SeedUrls))
     }
+}
 
   
     for w := 1; w <= config.WORKER_POOL_SIZE; w++ {
@@ -509,6 +515,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
                 
                 if state.processed >= maxPages {
                     log.Printf("✅ Достигнут лимит в %d страниц", maxPages)
+                    time.Sleep(3 * time.Second)
                     cancel()
                     close(done)
                     return
