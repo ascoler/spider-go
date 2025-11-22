@@ -1,7 +1,7 @@
 🕷️ Spider-Go
 
 A smart web crawler that automatically discovers and maps all links on websites.
-What It Does
+🚀 What It Does
 
     Finds all links on web pages
 
@@ -11,7 +11,7 @@ What It Does
 
     Automatically distributes tasks between workers
 
-How It Works
+🛠️ How It Works
 
     Give it a starting URL
 
@@ -20,7 +20,8 @@ How It Works
     New links get added to the processing queue
 
     Repeats for subsequent pages
-Components
+
+📦 Components
 
     Crawler Service (main.go) - Core crawling logic
 
@@ -30,14 +31,14 @@ Components
 
     API Gateway (Api-Gateway.go) - REST API interface
 
-Architecture
+🏗️ Architecture
 text
 
 API Gateway → Crawler Service → Queue Service → Storage Service
      ↓              ↓               ↓               ↓
    :8080          :50051          :50052          :50053
 
-Tech Stack
+💾 Tech Stack
 
     Go with gRPC microservices
 
@@ -46,7 +47,8 @@ Tech Stack
     Redis for queue management
 
     Gin for REST API
-Use Cases
+
+🎯 Use Cases
 
     Discover all links on a website
 
