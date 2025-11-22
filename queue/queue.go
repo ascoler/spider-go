@@ -61,6 +61,13 @@ func (q *Queue) GetQueueSize(ctx context.Context, req *pb.QueueSizeRequest) (*pb
 		Success:    true,
 	}, nil
 }
+func (q *Queue) ClearQueue(ctx context.Context, req *pb.ClearQueueRequest) (*pb.ClearQueueResponse, error) {
+    err := q.redisClient.Del(ctx, req.QueueName).Err()
+    if err != nil {
+        return &pb.ClearQueueResponse{Success: false}, err
+    }
+    return &pb.ClearQueueResponse{Success: true}, nil
+}
 
 func main() {
 	client := redis.NewClient(&redis.Options{
