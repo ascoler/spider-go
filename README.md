@@ -1,32 +1,76 @@
 🕷️ Spider-Go
 
-Умный сборщик ссылок из интернета
+A smart web crawler that automatically discovers and maps all links on websites.
+What It Does
 
-Простая система, которая автоматически находит все ссылки на веб-страницах. Как цифровой детектив, который исследует сайты и составляет карту всех переходов.
-🔧 Что делает:
+    Finds all links on web pages
 
-    📍 Находит все ссылки на странице
+    Processes multiple pages simultaneously for fast performance
 
-    🚀 Работает быстро (несколько страниц одновременно)
+    Stores everything in a database
 
-    💾 Сохраняет всё в базу данных
+    Automatically distributes tasks between workers
 
-    🔄 Сам распределяет задачи между рабочими
+How It Works
 
-🎯 Простое объяснение:
+    Give it a starting URL
 
-    Даёшь стартовую ссылку
+    System reads the page and discovers all links
 
-    Система читает страницу и находит все ссылки
+    New links get added to the processing queue
 
-    Новые ссылки добавляет в очередь
+    Repeats for subsequent pages
+Components
 
-    Повторяет для следующих страниц
+    Crawler Service (main.go) - Core crawling logic
 
-💡 Зачем нужно:
+    Queue Service (queue.go) - Manages URL processing queue
 
-    Узнать, куда ведут все ссылки на сайте
+    Storage Service (Work_With_Db.go) - Handles database operations
 
-    Найти скрытые разделы
+    API Gateway (Api-Gateway.go) - REST API interface
 
-    Построить карту сайта
+Architecture
+text
+
+API Gateway → Crawler Service → Queue Service → Storage Service
+     ↓              ↓               ↓               ↓
+   :8080          :50051          :50052          :50053
+
+Tech Stack
+
+    Go with gRPC microservices
+
+    MySQL for data storage
+
+    Redis for queue management
+
+    Gin for REST API
+Use Cases
+
+    Discover all links on a website
+
+    Find hidden website sections
+
+    Build complete site maps
+
+    Web content analysis
+
+⚡ Quick Start
+
+    Start all services:
+    bash
+
+go run Work_With_Db.go    # Storage service
+go run queue.go           # Queue service  
+go run main.go            # Crawler service
+go run Api-Gateway.go     # API gateway
+
+Send a request:
+bash
+
+curl -X POST http://localhost:8080/Analysis_Link \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+
+The system will crawl the website and return all discovered links and content.
