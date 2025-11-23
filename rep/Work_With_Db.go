@@ -21,23 +21,17 @@ type Storage_Server struct {
 
 type Page struct {
     ID          uint      `gorm:"primaryKey"`
-    URL         string    `gorm:"uniqueIndex;not null;type:text"`
+    URL         string    `gorm:"uniqueIndex;not null;type:text;size:500"`
     StatusCode  *int
-    Title       *string
+    Title       *string   `gorm:"type:text;index"`
     ContentText *string   `gorm:"type:text"`
     Depth       int       `gorm:"default:0"`
-    CreatedAt   time.Time
-    UpdatedAt   time.Time
+    CreatedAt   time.Time `gorm:"index"` 
+    UpdatedAt   time.Time `gorm:"index"` 
     VisitedAt   *time.Time
-    Links []Link `gorm:"foreignKey:FromPageID"` 
+    
 }
 
-type Link struct {
-    ID         uint    `gorm:"primaryKey"`
-    FromPageID uint
-    ToPageURL  string  `gorm:"type:text;index"` 
-    AnchorText *string `gorm:"type:text"`
-}
 
 func (s *Storage_Server) SavePage(ctx context.Context, req *pb.SavePageRequest) (*pb.SavePageResponse, error) {
     if req.GetPage() == nil {
@@ -141,42 +135,7 @@ func (s *Storage_Server) GetPage(ctx context.Context, req *pb.GetPageRequest) (*
     }, nil
 }
 
-func (s *Storage_Server) SaveLink(ctx context.Context, req *pb.SaveLinkRequest) (*pb.SaveLinkResponse, error) {
-    if req.GetLink() == nil {
-        return &pb.SaveLinkResponse{
-            Success: false,
-        }, fmt.Errorf("link is required")
-    }
-    
-    link := req.GetLink()
-    
-    var fromPageID uint
-    _, err := fmt.Sscanf(link.GetFromPageId(), "%d", &fromPageID)
-    if err != nil {
-        return &pb.SaveLinkResponse{
-            Success: false,
-        }, fmt.Errorf("invalid from_page_id: %v", err)
-    }
-    
-    anchorText := link.GetAnchorText()
-    dbLink := &Link{
-        FromPageID: fromPageID,
-        ToPageURL:  link.GetToPageUrl(),
-        AnchorText: &anchorText,
-    }
-    
-    err = s.db.Create(dbLink).Error
-    if err != nil {
-        return &pb.SaveLinkResponse{
-            Success: false,
-        }, fmt.Errorf("failed to save link: %v", err)
-    }
-    
-    return &pb.SaveLinkResponse{
-        Success: true,
-        LinkId:  fmt.Sprintf("%d", dbLink.ID),
-    }, nil
-}
+
 
 func stringPtr(s string) *string { return &s }
 func intPtr(i int) *int { return &i }
@@ -211,7 +170,7 @@ func connectDatabase() *gorm.DB {
 }
 
 func auto_migrate(db *gorm.DB) error {
-    err := db.AutoMigrate(&Page{}, &Link{})
+    err := db.AutoMigrate(&Page{})
     if err != nil {
         return fmt.Errorf("migration failed: %w", err)
     }
