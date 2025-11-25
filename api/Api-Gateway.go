@@ -33,7 +33,7 @@ func Analysis_Link(c *gin.Context) {
 		return
 	}
 
-	// Валидация URL
+	
 	if data.Url == "" || (!strings.HasPrefix(data.Url, "http://") && !strings.HasPrefix(data.Url, "https://")) {
 		c.JSON(400, gin.H{"error": "Invalid URL"})
 		return
