@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package storage;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "spider-go/gen/storage;storage";
+
+message SavePageRequest {
+  Page page = 1;
+}
+
+message SavePageResponse {
+  bool success = 1;
+  string page_id = 2;
+  string message = 3;
+}
+
+message CheckPageRequest {
+  string url = 1;
+}
+
+message CheckPageResponse {
+  bool exists = 1;
+  string page_id = 2;
+}
+
+message GetPageRequest {
+  string url = 1;
+  string page_id = 2;
+}
+
+message GetPageResponse {
+  Page page = 1;
+  bool success = 2;
+}
+
+message Page {
+  string id = 1;
+  string url = 2;
+  string domain = 3;
+  int32 status_code = 4;
+  string title = 5;
+  string content_text = 6;
+  int32 depth = 7;
+  bool is_processed = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  google.protobuf.Timestamp visited_at = 11;
+}
+
+service StorageService {
+  rpc SavePage(SavePageRequest) returns (SavePageResponse);
+  rpc CheckPageExists(CheckPageRequest) returns (CheckPageResponse);
+  rpc GetPage(GetPageRequest) returns (GetPageResponse);
+}

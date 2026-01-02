@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package crawler;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "spider-go/gen/crawler;crawler";
+
+message StartCrawlingRequest {
+  repeated string seed_urls = 1;
+  Config config = 2;
+  int32 max_pages = 3;  // Добавлено для переопределения config.max_pages
+}
+
+message StartCrawlingResponse {
+  string job_id = 1;
+  string status = 2;
+  google.protobuf.Timestamp started_at = 3;
+  repeated string content = 4;  // Добавлено для возврата контента
+}
+
+message CrawlingStatusRequest {
+  string job_id = 1;
+}
+
+message CrawlingStatusResponse {
+  string job_id = 1;
+  string status = 2;
+  int32 pages_crawled = 3;
+  int32 links_discovered = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp last_updated = 6;
+}
+
+message StopCrawlingRequest {
+  string job_id = 1;
+}
+
+message StopCrawlingResponse {
+  string job_id = 1;
+  string status = 2;
+  google.protobuf.Timestamp stopped_at = 3;
+}
+
+message GetLinksRequest {
+  string job_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message GetLinksResponse {
+  repeated Link links = 1;
+  int32 total_count = 2;
+}
+
+message Link {
+  string url = 1;
+  string anchor_text = 2;
+  string domain = 3;
+  google.protobuf.Timestamp discovered_at = 4;
+}
+
+message Config {
+  int32 max_depth = 1;
+  int32 max_pages = 2;
+  int32 worker_pool_size = 3;
+  int32 request_timeout = 4;
+  int32 max_retries = 5;
+  int32 retry_delay = 6;
+  int32 rate_limit_delay = 7;
+  string storage_type = 8;
+  string log_level = 9;
+  string output_file = 10;
+}
+
+service CrawlerService {
+  rpc StartCrawling(StartCrawlingRequest) returns (StartCrawlingResponse);
+  rpc GetCrawlingStatus(CrawlingStatusRequest) returns (CrawlingStatusResponse);
+  rpc StopCrawling(StopCrawlingRequest) returns (StopCrawlingResponse);
+  rpc GetDiscoveredLinks(GetLinksRequest) returns (GetLinksResponse);
+}

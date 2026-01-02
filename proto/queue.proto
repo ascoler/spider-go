@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package queue;
+
+option go_package = "spider-go/gen/queue;queue";
+
+message PushRequest {
+  string queue_name = 1;
+  repeated string urls = 2;
+}
+
+message PushResponse {
+  bool success = 1;
+  int32 items_added = 2;
+  string message = 3;
+}
+
+message PopRequest {
+  string queue_name = 1;
+  int32 count = 2;
+}
+
+message PopResponse {
+  repeated string urls = 1;
+  bool success = 2;
+}
+
+message QueueSizeRequest {
+  string queue_name = 1;
+}
+
+message QueueSizeResponse {
+  int32 size = 1;
+  bool success = 2;
+  string queue_name = 3;
+  repeated string first_items = 10;
+}
+
+message ClearQueueRequest {
+  string queue_name = 1;
+}
+
+message ClearQueueResponse {
+  bool success = 1;
+  int32 items_removed = 2;
+}
+
+service QueueService {
+  rpc Push(PushRequest) returns (PushResponse);
+  rpc Pop(PopRequest) returns (PopResponse);
+  rpc GetQueueSize(QueueSizeRequest) returns (QueueSizeResponse);
+  rpc ClearQueue(ClearQueueRequest) returns (ClearQueueResponse);
+}

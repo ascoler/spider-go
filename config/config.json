@@ -1,0 +1,12 @@
+{
+  "max_depth": 3,
+  "max_pages": 100,
+  "worker_pool_size": 10,
+  "request_timeout": 10,
+  "max_retries": 3,
+  "retry_delay": 2,
+  "rate_limit_delay": 100,
+  "storage_type": "memory",
+  "log_level": "info",
+  "output_file": "output.json"
+}
