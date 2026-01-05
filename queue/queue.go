@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	pb "local/crawler/gen/queue"
-	"log"
+	
+	 "log/slog"
 	"net"
 	"os/signal"
 	"os"
@@ -35,7 +36,7 @@ func (q *Queue) Pop(ctx context.Context, req *pb.PopRequest) (*pb.PopResponse, e
 			Success: true,
 		}, nil
 	} else if err != nil {
-		log.Printf("Redis error: %v", err)
+		slog.Error("Redis error","Error", err)
 		return &pb.PopResponse{Success: false}, err
 	}
 
@@ -72,6 +73,9 @@ func (q *Queue) ClearQueue(ctx context.Context, req *pb.ClearQueueRequest) (*pb.
 }
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout,
+	&slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
 	client := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "",
@@ -81,13 +85,13 @@ func main() {
 	ctx := context.Background()
 	_, err := client.Ping(ctx).Result()
 	if err != nil {
-		log.Fatalf("❌ Redis connection failed: %v", err)
+		slog.Error("Redis connection failed","Error", err)
 	}
-	log.Printf("✅ Redis connected successfully")
+	slog.Info("Redis connected successfully")
 
 	lis, err := net.Listen("tcp", ":50052")
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		slog.Error("Failed to listen","Error",err)
 	}
 	
 	grpcServer := grpc.NewServer()
@@ -99,15 +103,15 @@ func main() {
 
 	go func() {
 		<-stop
-		log.Println("🛑 Received shutdown signal...")
-		log.Println("⏳ Gracefully stopping gRPC server...")
+		slog.Info(" Received shutdown signal...")
+		slog.Info(" Gracefully stopping gRPC server...")
 		grpcServer.GracefulStop()
-		log.Println("✅ gRPC server stopped")
+		slog.Info("gRPC server stopped")
 	}()
 
 	pb.RegisterQueueServiceServer(grpcServer, queueServer)
-	log.Println("Queue Service is running on port 50052")
+	slog.Info("Queue Service is running on port 50052")
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+		slog.Error("Failed to serve", "Error",err)
 	}
 }

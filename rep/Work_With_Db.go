@@ -7,7 +7,8 @@ import (
 	pb "local/crawler/gen/storage"
 	"net"
 	"time"
-    "log"
+  
+    "log/slog"
     "syscall"
     "os/signal"
     "os"
@@ -167,7 +168,7 @@ func connectDatabase() *gorm.DB {
 	dsn := "root:admin@tcp(127.0.0.1:3306)/crawler_db?charset=utf8mb4&parseTime=True&loc=Local"
     db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
     if err != nil {
-        panic("failed to connect database")
+        slog.Error("failed to connect database")
     }
     return db
 }
@@ -175,6 +176,7 @@ func connectDatabase() *gorm.DB {
 func auto_migrate(db *gorm.DB) error {
     err := db.AutoMigrate(&Page{})
     if err != nil {
+        slog.Error("Migration failed","Error",err)
         return fmt.Errorf("migration failed: %w", err)
     }
     return nil
@@ -182,9 +184,11 @@ func auto_migrate(db *gorm.DB) error {
 
 func main() {
     db := connectDatabase()
-    
+    logger := slog.New(slog.NewJSONHandler(os.Stdout,
+	&slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
     if err := auto_migrate(db); err != nil {
-        log.Fatalf("Migration failed: %v", err)
+        slog.Error("Migration failed","Error", err)
     }
     
     
@@ -192,7 +196,7 @@ func main() {
     
     lis, err := net.Listen("tcp", ":50053")
     if err != nil {
-        log.Fatalf("Failed to listen: %v", err)
+        slog.Error("Failed to listen", "Error",err)
     }
     
     grpcServer := grpc.NewServer()
@@ -202,14 +206,14 @@ func main() {
 
 	go func() {
 		<-stop
-		log.Println("🛑 Received shutdown signal...")
-		log.Println("⏳ Gracefully stopping gRPC server...")
+		slog.Info("Received shutdown signal...")
+		slog.Info("Gracefully stopping gRPC server...")
 		grpcServer.GracefulStop()
-		log.Println("✅ gRPC server stopped")
+		slog.Info("gRPC server stopped")
 	}()
 
-    log.Println("Storage Service is running on port 50053")
+    slog.Info("Storage Service is running on port 50053")
     if err := grpcServer.Serve(lis); err != nil {
-        log.Fatalf("Failed to serve: %v", err)
+        slog.Error("Failed to serve","Error", err)
     }
 }

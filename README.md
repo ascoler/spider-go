@@ -45,7 +45,7 @@ API Gateway → Crawler Service → Queue Service → Storage Service
     MySQL for data storage
 
     Redis for queue management
-
+    
     Gin for REST API
 
 🎯 Use Cases

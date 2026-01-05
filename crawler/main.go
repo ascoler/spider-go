@@ -10,7 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -27,8 +27,6 @@ import (
 type CachedPage struct{
 	Title string
 	Content string
-	
-
 }
 type CrawlerServer struct {
 	pb.UnimplementedCrawlerServiceServer
@@ -102,17 +100,22 @@ type Config struct {
 	OUTPUT_FILE      string `json:"output_file"`
 }
 
+
+
+
+
+
 func Get_Config() (Config, error) {
 	file, err := os.Open("/home/wake_up/myproj/spider-go/config/config.json")
 	if err != nil {
-		log.Fatal("Failed to open config file", err)
+		slog.Error("failed to open config file", "error", err)
 	}
 	defer file.Close()
 
 	var config Config
 	err = json.NewDecoder(file).Decode(&config)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Failed to decode json","error",err)
 	}
 	return config, nil
 
@@ -120,6 +123,7 @@ func Get_Config() (Config, error) {
 func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string,string, error) {
 
 	if cached, ok := s.urlCache.Get(url); ok {
+		slog.Info("Entry found in cache")
 		return cached.Content,cached.Title,nil
 	}
 
@@ -161,10 +165,12 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 		QueueName: queueName,
 	})
 	if err != nil {
+		slog.Error("Error get size queue","Error",err)
 		return "", fmt.Errorf("ошибка получения размера очереди: %v", err)
 	}
 
 	if sizeResp.Size == 0 {
+		slog.Info("Queue is empty")
 		return "Очередь пуста", nil
 	}
 
@@ -180,7 +186,7 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 		})
 		if err != nil {
 
-			log.Printf("Ошибка при извлечении из очереди: %v", err)
+			slog.Error("Error dequeuing","Error",err)
 			break
 		}
 
@@ -188,7 +194,7 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 			select {
 			case jobs <- url:
 				jobsProcessed++
-				log.Printf("✅ Добавлена задача: %s", url)
+				slog.Info(" New task append", "url",url)
 			case <-ctx.Done():
 				return fmt.Sprintf("Обработано %d задач перед отменой", jobsProcessed), nil
 			default:
@@ -196,11 +202,11 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 				select {
 				case jobs <- url:
 					jobsProcessed++
-					log.Printf("✅ Добавлена задача: %s", url)
+					slog.Info(" New task append", "url",url)
 				case <-ctx.Done():
 					return fmt.Sprintf("Обработано %d задач перед отменой", jobsProcessed), nil
 				case <-time.After(100 * time.Millisecond):
-					log.Printf("⚠️ Канал jobs переполнен, пропускаем задачу: %s", url)
+					slog.Info(" Channel jobs crowded,skip", "url",url)
 				}
 			}
 		}
@@ -219,7 +225,7 @@ func (s *CrawlerServer) push_work(ctx context.Context, queue_name string, urls [
 func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- string, jobs <-chan string, result chan<- string, newLinks chan<- string) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("⚠️ Worker recovered from panic: %v", r)
+			slog.Error("Worker recovered from panic","Error",r)
 		}
 	}()
 
@@ -235,13 +241,14 @@ func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- stri
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("❌ Worker panic while processing %s: %v", url, r)
+						slog.Error("Worker panic while processing","Url",url,"Error", r)
 					}
 				}()
 
 				links, title, content := s.AnalysisLink(ctx, url, 3)
 				select {
 				case result <- fmt.Sprintf("✅ Worker %s done: %d links, title: %s", url, len(links), title):
+					slog.Info(" Worker done","Count links",len(links),"Title",title)
 				case <-ctx.Done():
 					return
 				}
@@ -270,13 +277,13 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		return []string{}, "", ""
 	}
 	if s.storageClient == nil {
-		log.Printf("❌ Storage client is nil for URL: %s", url)
+		slog.Info(" Storage client is nil for URL","Url",url)
 		return []string{}, "", ""
 	}
 	contents, titles, err := s.CheckPageExists(ctx, url)
     if err == nil && contents != "" {
         
-        log.Printf("✅ Page already exists (from cache/storage): %s", url)
+        slog.Info(" Page already exists (from cache/storage)", "Url",url)
         return []string{}, titles, contents
     }
     
@@ -287,23 +294,23 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	var titleBuilder, contentBuilder strings.Builder
 
 	if err != nil {
-		log.Printf("Failed to connect to the target page %s: %v", url, err)
+		slog.Info("Failed to connect to the target page", "Url",url,"Error",err)
 		return links, "", ""
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
-		log.Printf("HTTP Error %d: %s", res.StatusCode, res.Status)
+		slog.Warn("HTTP Error", slog.String("Status code", res.Status))
 		return links, "", ""
 	}
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
-		log.Printf("Failed to parse the target page %s: %v", url, err)
+		slog.Warn("Failed to parse the target page", "Url",url,"Error",err)
 		return links, "", ""
 	}
 
-	fmt.Printf("\nLinks found: %s\n", url)
+	slog.Info("\nLinks found: %s\n","Url",url)
 
 	doc.Find("a").Each(func(i int, sel *goquery.Selection) {
 		href, exists := sel.Attr("href")
@@ -315,7 +322,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 
 		if exists && href != "" {
 			text := strings.TrimSpace(sel.Text())
-			fmt.Printf("Ссылка %d: %s - %s\n", i+1, href, text)
+			slog.Info("Link","Href", href,"Text", text)
 			links = append(links, href)
 		}
 	})
@@ -323,7 +330,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	doc.Find("title").Each(func(i int, sel *goquery.Selection) {
 		title := strings.TrimSpace(sel.Text())
 		titleBuilder.WriteString(title)
-		fmt.Printf("Заголовок: %s\n", title)
+		slog.Info("Title","Title",title)
 	})
 
 	doc.Find("p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, dd, dt").Each(func(i int, sel *goquery.Selection) {
@@ -341,7 +348,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		}
 		if exists {
 			alt, _ := sel.Attr("alt")
-			fmt.Printf("Изображение %d: %s - %s\n", i+1, src, alt)
+			slog.Info("Picture","Src", src,"Alt", alt)
 		}
 	})
 
@@ -372,23 +379,25 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	})
 
 	if err != nil {
-		log.Printf("Failed to save page to storage: %v", err)
+		slog.Error("Failed to save page to storage", "Error",err)
 	} else {
 		s.filter.Add([]byte(url))
 		s.urlCache.Add(url,&CachedPage{
 			Title: title,
 			Content: content,
 		})
-		log.Printf("✅ Page saved to storage: %s", url)
+		slog.Info("Page saved to storage: %s", "Url",url)
 	}
-
+	
+	slog.Info("Content found","Title",title,"Content",content)
+	slog.Any("Links",links)
 	return links, title, content
 }
 
 func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCrawlingRequest) (*pb.StartCrawlingResponse, error) {
 	config, err := Get_Config()
 	if err != nil {
-		log.Fatal("Error")
+		slog.Error("Cannot open config","Error",err)
 	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -413,9 +422,9 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 
 		err := s.push_work(ctx, "crawl_queue", req.SeedUrls)
 		if err != nil {
-			log.Printf("❌ Failed to add seed URLs: %v", err)
+			slog.Warn("Failed to add seed URLs", "Error",err)
 		} else {
-			log.Printf("✅ Added %d seed URLs to queue", len(req.SeedUrls))
+			slog.Info("Added seed URLs to queue", "Count_links",len(req.SeedUrls))
 		}
 	}
 
@@ -429,7 +438,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 
 	go func() {
 		for result := range results {
-			log.Println(result)
+			slog.Info("Result","All",result)
 		}
 	}()
 
@@ -442,7 +451,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 			allContent = append(allContent, content)
 			contentMutex.Unlock()
 			if len(content) > 100 {
-				log.Printf("📄 Получен контент: %s...", content[:100])
+				slog.Info("content received","Content",content[:100])
 			}
 		}
 	}()
@@ -464,16 +473,16 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 		for {
 			select {
 			case <-ctx.Done():
-				log.Println("Context cancelled")
+				slog.Info("Context cancelled")
 				close(done)
 				return
 
 			case <-ticker.C:
 				message, err := s.TakeJobs(ctx, jobs, "crawl_queue")
 				if err != nil {
-					log.Printf("Ошибка TakeJobs: %v", err)
+					slog.Error("Error TakeJobs","Error",err)
 				} else if message != "Очередь пуста" {
-					log.Printf("TakeJobs: %s", message)
+					slog.Info("TakeJobs", "Info",message)
 					idleCounter = 0
 				} else {
 					idleCounter++
@@ -485,14 +494,14 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 				if state.ShouldProcess(link) {
 					err := s.push_work(ctx, "crawl_queue", []string{link})
 					if err != nil {
-						log.Printf("Ошибка push_work: %v", err)
+						slog.Error("Error push_work: %v", "Error",err)
 					} else {
-						log.Printf("📄 Добавлена страница %d/%d: %s", state.processed, maxPages, link)
+						slog.Info("Added page","State", state.processed,"MaxPages", maxPages,"Url", link)
 					}
 				}
 
 				if state.processed >= maxPages {
-					log.Printf("✅ Достигнут лимит в %d страниц", maxPages)
+					slog.Info("The limit of pages has been reached", "Max_Pages",maxPages)
 					time.Sleep(3 * time.Second)
 					cancel()
 					close(done)
@@ -501,7 +510,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 			}
 
 			if idleCounter >= maxIdleCount {
-				log.Printf("Завершение по бездействию")
+				slog.Info("Завершение по бездействию")
 				cancel()
 				close(done)
 				return
@@ -516,7 +525,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 	close(results)
 	close(newLinks)
 	close(ALLcontent)
-
+		
 	return &pb.StartCrawlingResponse{
 		Content: allContent,
 		Status:  fmt.Sprintf("Completed: %d pages", state.processed),
@@ -524,20 +533,23 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 }
 func main() {
 	queueConn, err := grpc.Dial("localhost:50052", grpc.WithInsecure())
+	logger := slog.New(slog.NewJSONHandler(os.Stdout,
+	&slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
 	if err != nil {
-		log.Fatalf("❌ Failed to connect to queue: %v", err)
+		slog.Error("Failed to connect to queue", "Error",err)
 	}
 	defer queueConn.Close()
 
 	storageConn, err := grpc.Dial("localhost:50053", grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("❌ Failed to connect to storage: %v", err)
+		slog.Error("Failed to connect to storage:", "Error",err)
 	}
 	defer storageConn.Close()
 
 	config, err := Get_Config()
 	if err != nil {
-		log.Fatalf("❌ Failed to load config: %v", err)
+		slog.Error("Failed to load config", "Error",err)
 	}
 
 	crawlerServer := NewCrawlerServer(
@@ -547,13 +559,13 @@ func main() {
 	)
 
 	if crawlerServer.storageClient == nil {
-		log.Fatalf("❌ Storage client is nil!")
+		slog.Error("Storage client is nil!")
 	}
-	log.Printf("✅ Storage client initialized")
+	slog.Info("Storage client initialized")
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
-		log.Fatalf("❌ Failed to listen: %v", err)
+		slog.Error("Failed to listen", "Error",err)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -564,14 +576,14 @@ func main() {
 
 	go func() {
 		<-stop
-		log.Println("🛑 Received shutdown signal...")
-		log.Println("⏳ Gracefully stopping gRPC server...")
+		slog.Info("Received shutdown signal...")
+		slog.Info("Gracefully stopping gRPC server...")
 		grpcServer.GracefulStop()
-		log.Println("✅ gRPC server stopped")
+		slog.Info("gRPC server stopped")
 	}()
 
-	log.Printf("🚀 gRPC Server starting on port 50051...")
+	slog.Info("gRPC Server starting on port 50051...")
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("❌ Server failed: %v", err)
+		slog.Error("Server failed", "Error",err)
 	}
 }

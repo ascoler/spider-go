@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
+	"os"
 	pb "local/crawler/gen/crawler"
-	"log"
+	
 	"strings"
 	"time"
-
+	"log/slog"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
 )
@@ -21,7 +22,7 @@ var crawlerClient pb.CrawlerServiceClient
 func init() {
 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
 	if err != nil {
-		log.Fatal("Connection failed:", err)
+		slog.Error("Connection failed:", "Error",err)
 	}
 	crawlerClient = pb.NewCrawlerServiceClient(conn)
 }
@@ -47,12 +48,12 @@ func Analysis_Link(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Printf("❌ Crawling error: %v", err)
+		slog.Error("Crawling error","Error", err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
-	log.Printf("✅ Success! Status: %s", resp.GetStatus())
+	slog.Info("Success! Status")
 
 	c.JSON(200, gin.H{
 		"job_id":  resp.GetJobId(),
@@ -62,6 +63,9 @@ func Analysis_Link(c *gin.Context) {
 }
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout,
+	&slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
 	r := gin.Default()
 	r.POST("/Analysis_Link", Analysis_Link)
 
@@ -69,6 +73,6 @@ func main() {
 		c.JSON(200, gin.H{"status": "OK"})
 	})
 
-	log.Println("🚀 API Gateway starting on port 8080...")
+	slog.Info("API Gateway starting on port 8080...")
 	r.Run(":8080")
 }
