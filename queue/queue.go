@@ -86,12 +86,14 @@ func main() {
 	_, err := client.Ping(ctx).Result()
 	if err != nil {
 		slog.Error("Redis connection failed","Error", err)
+		return 
 	}
 	slog.Info("Redis connected successfully")
 
 	lis, err := net.Listen("tcp", ":50052")
 	if err != nil {
 		slog.Error("Failed to listen","Error",err)
+		return 	
 	}
 	
 	grpcServer := grpc.NewServer()
@@ -112,6 +114,9 @@ func main() {
 	pb.RegisterQueueServiceServer(grpcServer, queueServer)
 	slog.Info("Queue Service is running on port 50052")
 	if err := grpcServer.Serve(lis); err != nil {
+		
 		slog.Error("Failed to serve", "Error",err)
+		return 
 	}
+
 }

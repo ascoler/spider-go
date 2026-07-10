@@ -164,13 +164,14 @@ func timeToTimestampPtr(t *time.Time) *timestamppb.Timestamp {
     return timestamppb.New(*t)
 }
 
-func connectDatabase() *gorm.DB {
+func connectDatabase() (*gorm.DB,error) {
 	dsn := "root:admin@tcp(127.0.0.1:3306)/crawler_db?charset=utf8mb4&parseTime=True&loc=Local"
     db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
     if err != nil {
         slog.Error("failed to connect database")
+        return nil,err
     }
-    return db
+    return db,nil
 }
 
 func auto_migrate(db *gorm.DB) error {
@@ -183,12 +184,17 @@ func auto_migrate(db *gorm.DB) error {
 }
 
 func main() {
-    db := connectDatabase()
+    db,error := connectDatabase()
+    if error != nil {
+        slog.Error("Database connection failed","Error",error)
+        return 
+    }
     logger := slog.New(slog.NewJSONHandler(os.Stdout,
 	&slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
     if err := auto_migrate(db); err != nil {
         slog.Error("Migration failed","Error", err)
+        return 
     }
     
     
@@ -197,6 +203,7 @@ func main() {
     lis, err := net.Listen("tcp", ":50053")
     if err != nil {
         slog.Error("Failed to listen", "Error",err)
+        return 
     }
     
     grpcServer := grpc.NewServer()
@@ -215,5 +222,6 @@ func main() {
     slog.Info("Storage Service is running on port 50053")
     if err := grpcServer.Serve(lis); err != nil {
         slog.Error("Failed to serve","Error", err)
+        return 
     }
 }
