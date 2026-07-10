@@ -7,10 +7,10 @@ import (
 	pb "local/crawler/gen/crawler"
 	queue "local/crawler/gen/queue"
 	storage "local/crawler/gen/storage"
-	"log"
+	
+	"log/slog"
 	"net"
 	"net/http"
-	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -24,8 +24,9 @@ import (
 	boom "github.com/tylertreat/BoomFilters"
 	"google.golang.org/grpc"
 )
-type CachedPage struct{
-	Title string
+
+type CachedPage struct {
+	Title   string
 	Content string
 }
 type CrawlerServer struct {
@@ -100,60 +101,51 @@ type Config struct {
 	OUTPUT_FILE      string `json:"output_file"`
 }
 
-
-
-
-
-
 func Get_Config() (Config, error) {
-	file, err := os.Open("/home/wake_up/myproj/spider-go/config/config.json")
+	file, err := os.Open("/home/wakeup/spider-go/config/config.json")
 	if err != nil {
+		
 		slog.Error("failed to open config file", "error", err)
+		return Config{}, err
 	}
 	defer file.Close()
 
 	var config Config
 	err = json.NewDecoder(file).Decode(&config)
 	if err != nil {
-		slog.Error("Failed to decode json","error",err)
+		slog.Error("Failed to decode json", "error", err)
+		return Config{}, err
 	}
 	return config, nil
 
 }
-func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string,string, error) {
+func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string, string, error) {
 
 	if cached, ok := s.urlCache.Get(url); ok {
 		slog.Info("Entry found in cache")
-		return cached.Content,cached.Title,nil
+		return cached.Content, cached.Title, nil
 	}
-
 
 	if !s.filter.Test([]byte(url)) {
-		return "", "",nil
+		return "", "", nil
 	}
-
-	
-	
 
 	se, err := s.storageClient.GetPage(ctx, &storage.GetPageRequest{
-			Url: url,
-		})
-		if err != nil {
-			log.Printf("Error %v", err)
-		}
+		Url: url,
+	})
+	
 	if err != nil {
-		return "","",nil
+		slog.Error("Error fetching page", "Url", url, "Error", err)
+		return "", "", err
 	}
 
-	
 	s.urlCache.Add(url, &CachedPage{
-			Content: se.Page.ContentText,
-			Title: se.Page.Title,})
-		
-	s.filter.Add([]byte(url))
-	
+		Content: se.Page.ContentText,
+		Title:   se.Page.Title})
 
-	return se.Page.ContentText,se.Page.Title,nil
+	s.filter.Add([]byte(url))
+
+	return se.Page.ContentText, se.Page.Title, nil
 }
 func ResolveLink(url string) bool {
 	return strings.HasPrefix(url, "http://") ||
@@ -165,13 +157,13 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 		QueueName: queueName,
 	})
 	if err != nil {
-		slog.Error("Error get size queue","Error",err)
-		return "", fmt.Errorf("ошибка получения размера очереди: %v", err)
+		slog.Error("Error get size queue", "Error", err)
+		return "", fmt.Errorf("Error get size queue: %v", err)
 	}
 
 	if sizeResp.Size == 0 {
 		slog.Info("Queue is empty")
-		return "Очередь пуста", nil
+		return "Queue is empty", nil
 	}
 
 	jobsProcessed := 0
@@ -186,15 +178,17 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 		})
 		if err != nil {
 
-			slog.Error("Error dequeuing","Error",err)
-			break
+			slog.Error("Error dequeuing", "Error", err)
+			return "", err
+			
+			
 		}
 
 		for _, url := range popResp.Urls {
 			select {
 			case jobs <- url:
 				jobsProcessed++
-				slog.Info(" New task append", "url",url)
+				slog.Info(" New task append", "url", url)
 			case <-ctx.Done():
 				return fmt.Sprintf("Обработано %d задач перед отменой", jobsProcessed), nil
 			default:
@@ -202,11 +196,11 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 				select {
 				case jobs <- url:
 					jobsProcessed++
-					slog.Info(" New task append", "url",url)
+					slog.Info(" New task append", "url", url)
 				case <-ctx.Done():
 					return fmt.Sprintf("Обработано %d задач перед отменой", jobsProcessed), nil
 				case <-time.After(100 * time.Millisecond):
-					slog.Info(" Channel jobs crowded,skip", "url",url)
+					slog.Info(" Channel jobs crowded,skip", "url", url)
 				}
 			}
 		}
@@ -223,11 +217,7 @@ func (s *CrawlerServer) push_work(ctx context.Context, queue_name string, urls [
 
 }
 func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- string, jobs <-chan string, result chan<- string, newLinks chan<- string) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("Worker recovered from panic","Error",r)
-		}
-	}()
+	
 
 	for {
 		select {
@@ -241,14 +231,15 @@ func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- stri
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("Worker panic while processing","Url",url,"Error", r)
+						slog.Error("Worker panic while processing", "Url", url, "Error", r)
+						
 					}
 				}()
 
 				links, title, content := s.AnalysisLink(ctx, url, 3)
 				select {
 				case result <- fmt.Sprintf("✅ Worker %s done: %d links, title: %s", url, len(links), title):
-					slog.Info(" Worker done","Count links",len(links),"Title",title)
+					slog.Info(" Worker done", "Count links", len(links), "Title", title)
 				case <-ctx.Done():
 					return
 				}
@@ -277,24 +268,22 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		return []string{}, "", ""
 	}
 	if s.storageClient == nil {
-		slog.Info(" Storage client is nil for URL","Url",url)
+		slog.Info(" Storage client is nil for URL", "Url", url)
 		return []string{}, "", ""
 	}
 	contents, titles, err := s.CheckPageExists(ctx, url)
-    if err == nil && contents != "" {
-        
-        slog.Info(" Page already exists (from cache/storage)", "Url",url)
-        return []string{}, titles, contents
-    }
-    
-    
-    
+	if err == nil && contents != "" {
+
+		slog.Info(" Page already exists (from cache/storage)", "Url", url)
+		return []string{}, titles, contents
+	}
+
 	res, err := http.Get(url)
 	var links []string
 	var titleBuilder, contentBuilder strings.Builder
 
 	if err != nil {
-		slog.Info("Failed to connect to the target page", "Url",url,"Error",err)
+		slog.Info("Failed to connect to the target page", "Url", url, "Error", err)
 		return links, "", ""
 	}
 	defer res.Body.Close()
@@ -306,11 +295,11 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
-		slog.Warn("Failed to parse the target page", "Url",url,"Error",err)
+		slog.Warn("Failed to parse the target page", "Url", url, "Error", err)
 		return links, "", ""
 	}
 
-	slog.Info("\nLinks found: %s\n","Url",url)
+	slog.Info("\nLinks found: %s\n", "Url", url)
 
 	doc.Find("a").Each(func(i int, sel *goquery.Selection) {
 		href, exists := sel.Attr("href")
@@ -322,7 +311,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 
 		if exists && href != "" {
 			text := strings.TrimSpace(sel.Text())
-			slog.Info("Link","Href", href,"Text", text)
+			slog.Info("Link", "Href", href, "Text", text)
 			links = append(links, href)
 		}
 	})
@@ -330,7 +319,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	doc.Find("title").Each(func(i int, sel *goquery.Selection) {
 		title := strings.TrimSpace(sel.Text())
 		titleBuilder.WriteString(title)
-		slog.Info("Title","Title",title)
+		slog.Info("Title", "Title", title)
 	})
 
 	doc.Find("p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, dd, dt").Each(func(i int, sel *goquery.Selection) {
@@ -348,7 +337,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		}
 		if exists {
 			alt, _ := sel.Attr("alt")
-			slog.Info("Picture","Src", src,"Alt", alt)
+			slog.Info("Picture", "Src", src, "Alt", alt)
 		}
 	})
 
@@ -379,25 +368,27 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	})
 
 	if err != nil {
-		slog.Error("Failed to save page to storage", "Error",err)
+		slog.Error("Failed to save page to storage", "Error", err)
+		return links, title, content
 	} else {
 		s.filter.Add([]byte(url))
-		s.urlCache.Add(url,&CachedPage{
-			Title: title,
+		s.urlCache.Add(url, &CachedPage{
+			Title:   title,
 			Content: content,
 		})
-		slog.Info("Page saved to storage: %s", "Url",url)
+		slog.Info("Page saved to storage: %s", "Url", url)
 	}
-	
-	slog.Info("Content found","Title",title,"Content",content)
-	slog.Any("Links",links)
+
+	slog.Info("Content found", "Title", title, "Content", content)
+	slog.Any("Links", links)
 	return links, title, content
 }
 
 func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCrawlingRequest) (*pb.StartCrawlingResponse, error) {
 	config, err := Get_Config()
 	if err != nil {
-		slog.Error("Cannot open config","Error",err)
+		slog.Error("Cannot open config", "Error", err)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -407,6 +398,9 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 	maxPages := config.MAX_PAGES
 	if req.MaxPages > 0 {
 		maxPages = int(req.MaxPages)
+	}
+	if maxPages <= 0 {
+    	return nil, fmt.Errorf("invalid max_pages: must be greater than 0, got %d", maxPages)
 	}
 
 	jobs := make(chan string, 5000)
@@ -422,9 +416,11 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 
 		err := s.push_work(ctx, "crawl_queue", req.SeedUrls)
 		if err != nil {
-			slog.Warn("Failed to add seed URLs", "Error",err)
+			
+			slog.Warn("Failed to add seed URLs", "Error", err)
+			return nil, fmt.Errorf("failed to add seed URLs: %v", err)
 		} else {
-			slog.Info("Added seed URLs to queue", "Count_links",len(req.SeedUrls))
+			slog.Info("Added seed URLs to queue", "Count_links", len(req.SeedUrls))
 		}
 	}
 
@@ -438,7 +434,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 
 	go func() {
 		for result := range results {
-			slog.Info("Result","All",result)
+			slog.Info("Result", "All", result)
 		}
 	}()
 
@@ -451,7 +447,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 			allContent = append(allContent, content)
 			contentMutex.Unlock()
 			if len(content) > 100 {
-				slog.Info("content received","Content",content[:100])
+				slog.Info("content received", "Content", content[:100])
 			}
 		}
 	}()
@@ -480,9 +476,11 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 			case <-ticker.C:
 				message, err := s.TakeJobs(ctx, jobs, "crawl_queue")
 				if err != nil {
-					slog.Error("Error TakeJobs","Error",err)
-				} else if message != "Очередь пуста" {
-					slog.Info("TakeJobs", "Info",message)
+					slog.Error("Error TakeJobs", "Error", err)
+					idleCounter++ 
+    				continue 
+				} else if message != "Queue is empty" {
+					slog.Info("TakeJobs", "Info", message)
 					idleCounter = 0
 				} else {
 					idleCounter++
@@ -494,14 +492,25 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 				if state.ShouldProcess(link) {
 					err := s.push_work(ctx, "crawl_queue", []string{link})
 					if err != nil {
-						slog.Error("Error push_work: %v", "Error",err)
+						for attempt := 1; attempt <= config.MAX_RETRIES; attempt++ {
+							slog.Warn("Retrying push_work", "Attempt", attempt, "Url", link)
+							time.Sleep(time.Duration(config.RETRY_DELAY) * time.Second)
+							err = s.push_work(ctx, "crawl_queue", []string{link})
+							if err == nil {
+								slog.Info("Successfully pushed link after retry", "Url", link)
+								break
+							}
+						}
+						if err != nil {				
+							slog.Error("Error push_work: %v", "Error", err)
+						}
 					} else {
-						slog.Info("Added page","State", state.processed,"MaxPages", maxPages,"Url", link)
+						slog.Info("Added page", "State", state.processed, "MaxPages", maxPages, "Url", link)
 					}
 				}
 
 				if state.processed >= maxPages {
-					slog.Info("The limit of pages has been reached", "Max_Pages",maxPages)
+					slog.Info("The limit of pages has been reached", "Max_Pages", maxPages)
 					time.Sleep(3 * time.Second)
 					cancel()
 					close(done)
@@ -510,7 +519,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 			}
 
 			if idleCounter >= maxIdleCount {
-				slog.Info("Завершение по бездействию")
+				slog.Info("Completion due to inactivity")
 				cancel()
 				close(done)
 				return
@@ -525,7 +534,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 	close(results)
 	close(newLinks)
 	close(ALLcontent)
-		
+
 	return &pb.StartCrawlingResponse{
 		Content: allContent,
 		Status:  fmt.Sprintf("Completed: %d pages", state.processed),
@@ -534,22 +543,26 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 func main() {
 	queueConn, err := grpc.Dial("localhost:50052", grpc.WithInsecure())
 	logger := slog.New(slog.NewJSONHandler(os.Stdout,
-	&slog.HandlerOptions{Level: slog.LevelDebug}))
+		&slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 	if err != nil {
-		slog.Error("Failed to connect to queue", "Error",err)
+		
+		slog.Error("Failed to connect to queue", "Error", err)
+		return 
 	}
 	defer queueConn.Close()
 
 	storageConn, err := grpc.Dial("localhost:50053", grpc.WithInsecure())
 	if err != nil {
-		slog.Error("Failed to connect to storage:", "Error",err)
+		slog.Error("Failed to connect to storage:", "Error", err)
+		return 
 	}
 	defer storageConn.Close()
 
 	config, err := Get_Config()
 	if err != nil {
-		slog.Error("Failed to load config", "Error",err)
+		slog.Error("Failed to load config", "Error", err)
+		return 
 	}
 
 	crawlerServer := NewCrawlerServer(
@@ -560,12 +573,14 @@ func main() {
 
 	if crawlerServer.storageClient == nil {
 		slog.Error("Storage client is nil!")
+		return 
 	}
 	slog.Info("Storage client initialized")
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
-		slog.Error("Failed to listen", "Error",err)
+		slog.Error("Failed to listen", "Error", err)
+		return 
 	}
 
 	grpcServer := grpc.NewServer()
@@ -584,6 +599,6 @@ func main() {
 
 	slog.Info("gRPC Server starting on port 50051...")
 	if err := grpcServer.Serve(lis); err != nil {
-		slog.Error("Server failed", "Error",err)
+		slog.Error("Server failed", "Error", err)
 	}
 }
