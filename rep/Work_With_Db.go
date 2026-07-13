@@ -47,6 +47,25 @@ func (s *Storage_Server) SavePage(ctx context.Context, req *pb.SavePageRequest) 
     
     page := req.GetPage()
     
+    var existing Page
+    err := s.db.Where("url = ?", page.GetUrl()).First(&existing).Error
+    if err == nil {
+        
+        return &pb.SavePageResponse{
+            Success: true,
+            PageId:  fmt.Sprintf("%d", existing.ID),
+            Message: "page already exists",
+        }, nil
+    }
+    if !errors.Is(err, gorm.ErrRecordNotFound) {
+        
+        return &pb.SavePageResponse{
+            Success: false,
+            Message: fmt.Sprintf("database error: %v", err),
+        }, nil
+    }
+
+    
     statusCode := int(page.GetStatusCode())
     title := page.GetTitle()
     contentText := page.GetContentText()
@@ -60,8 +79,7 @@ func (s *Storage_Server) SavePage(ctx context.Context, req *pb.SavePageRequest) 
         VisitedAt:   timePtr(time.Now()),
     }
     
-    err := s.db.Create(dbPage).Error
-    if err != nil {
+    if err := s.db.Create(dbPage).Error; err != nil {
         return &pb.SavePageResponse{
             Success: false,
             Message: fmt.Sprintf("failed to save page: %v", err),
@@ -187,14 +205,14 @@ func main() {
     db,error := connectDatabase()
     if error != nil {
         slog.Error("Database connection failed","Error",error)
-        return 
+        os.Exit(1) 
     }
     logger := slog.New(slog.NewJSONHandler(os.Stdout,
 	&slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
     if err := auto_migrate(db); err != nil {
         slog.Error("Migration failed","Error", err)
-        return 
+        os.Exit(1) 
     }
     
     
@@ -203,7 +221,7 @@ func main() {
     lis, err := net.Listen("tcp", ":50053")
     if err != nil {
         slog.Error("Failed to listen", "Error",err)
-        return 
+        os.Exit(1)
     }
     
     grpcServer := grpc.NewServer()
@@ -222,6 +240,6 @@ func main() {
     slog.Info("Storage Service is running on port 50053")
     if err := grpcServer.Serve(lis); err != nil {
         slog.Error("Failed to serve","Error", err)
-        return 
+        os.Exit(1)
     }
 }

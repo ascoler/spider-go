@@ -7,7 +7,7 @@ import (
 	pb "local/crawler/gen/crawler"
 	queue "local/crawler/gen/queue"
 	storage "local/crawler/gen/storage"
-	
+
 	"log/slog"
 	"net"
 	"net/http"
@@ -58,6 +58,25 @@ func NewCrawlerServer(
 	}
 }
 
+type LinkTask struct {
+	URL   string `json:"url"`
+	Depth int    `json:"depth"`
+}
+
+func encodeTask(t LinkTask) (string, error) {
+	b, err := json.Marshal(t)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func decodeTask(s string) (LinkTask, error) {
+	var t LinkTask
+	err := json.Unmarshal([]byte(s), &t)
+	return t, err
+}
+
 type CrawlState struct {
 	mu        sync.RWMutex
 	visited   map[string]bool
@@ -66,26 +85,18 @@ type CrawlState struct {
 }
 
 func (s *CrawlState) ShouldProcess(url string) bool {
-	s.mu.RLock()
-	if s.processed >= s.maxpages {
-		s.mu.RUnlock()
-		return false
-	}
-	s.mu.RUnlock()
-
-	s.mu.RLock()
-	if s.visited[url] {
-		s.mu.RUnlock()
-		return false
-	}
-	s.mu.RUnlock()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.processed >= s.maxpages {
+		return false
+	}
+	if s.visited[url] {
+		return false
+	}
 	s.visited[url] = true
 	s.processed++
 	return true
-
 }
 
 type Config struct {
@@ -102,9 +113,13 @@ type Config struct {
 }
 
 func Get_Config() (Config, error) {
-	file, err := os.Open("/home/wakeup/spider-go/config/config.json")
+	path := os.Getenv("CONFIG_PATH")
+	if path == "" {
+		path = "/home/wakeup/spider-go/config/config.json"
+	}
+
+	file, err := os.Open(path)
 	if err != nil {
-		
 		slog.Error("failed to open config file", "error", err)
 		return Config{}, err
 	}
@@ -117,8 +132,8 @@ func Get_Config() (Config, error) {
 		return Config{}, err
 	}
 	return config, nil
-
 }
+
 func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string, string, error) {
 
 	if cached, ok := s.urlCache.Get(url); ok {
@@ -133,7 +148,7 @@ func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string
 	se, err := s.storageClient.GetPage(ctx, &storage.GetPageRequest{
 		Url: url,
 	})
-	
+
 	if err != nil {
 		slog.Error("Error fetching page", "Url", url, "Error", err)
 		return "", "", err
@@ -147,18 +162,37 @@ func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string
 
 	return se.Page.ContentText, se.Page.Title, nil
 }
+
 func ResolveLink(url string) bool {
 	return strings.HasPrefix(url, "http://") ||
 		strings.HasPrefix(url, "https://")
 }
-func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueName string) (string, error) {
+
+
+func (s *CrawlerServer) pushLinks(ctx context.Context, queueName string, tasks []LinkTask) error {
+	encoded := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		enc, err := encodeTask(t)
+		if err != nil {
+			slog.Error("Failed to encode task", "Url", t.URL, "Error", err)
+			continue
+		}
+		encoded = append(encoded, enc)
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	return s.push_work(ctx, queueName, encoded)
+}
+
+func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- LinkTask, queueName string) (string, error) {
 
 	sizeResp, err := s.queueClient.GetQueueSize(ctx, &queue.QueueSizeRequest{
 		QueueName: queueName,
 	})
 	if err != nil {
 		slog.Error("Error get size queue", "Error", err)
-		return "", fmt.Errorf("Error get size queue: %v", err)
+		return "", fmt.Errorf("error get size queue: %v", err)
 	}
 
 	if sizeResp.Size == 0 {
@@ -177,30 +211,37 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 			QueueName: queueName,
 		})
 		if err != nil {
-
 			slog.Error("Error dequeuing", "Error", err)
 			return "", err
-			
-			
 		}
 
-		for _, url := range popResp.Urls {
+		for _, raw := range popResp.Urls {
+			task, err := decodeTask(raw)
+			if err != nil {
+				slog.Error("Failed to decode task, skipping", "raw", raw, "Error", err)
+				continue
+			}
+
+			if task.Depth <= 0 {
+				slog.Info("Skipping task, depth exhausted", "Url", task.URL)
+				continue
+			}
+
 			select {
-			case jobs <- url:
+			case jobs <- task:
 				jobsProcessed++
-				slog.Info(" New task append", "url", url)
+				slog.Info(" New task append", "url", task.URL, "depth", task.Depth)
 			case <-ctx.Done():
 				return fmt.Sprintf("Обработано %d задач перед отменой", jobsProcessed), nil
 			default:
-
 				select {
-				case jobs <- url:
+				case jobs <- task:
 					jobsProcessed++
-					slog.Info(" New task append", "url", url)
+					slog.Info(" New task append", "url", task.URL, "depth", task.Depth)
 				case <-ctx.Done():
 					return fmt.Sprintf("Обработано %d задач перед отменой", jobsProcessed), nil
 				case <-time.After(100 * time.Millisecond):
-					slog.Info(" Channel jobs crowded,skip", "url", url)
+					slog.Info(" Channel jobs crowded,skip", "url", task.URL)
 				}
 			}
 		}
@@ -208,22 +249,22 @@ func (s *CrawlerServer) TakeJobs(ctx context.Context, jobs chan<- string, queueN
 
 	return fmt.Sprintf("Успешно обработано %d задач из очереди", jobsProcessed), nil
 }
+
 func (s *CrawlerServer) push_work(ctx context.Context, queue_name string, urls []string) error {
 	_, err := s.queueClient.Push(ctx, &queue.PushRequest{
 		QueueName: queue_name,
 		Urls:      urls,
 	})
 	return err
-
 }
-func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- string, jobs <-chan string, result chan<- string, newLinks chan<- string) {
-	
+
+func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- string, jobs <-chan LinkTask, result chan<- string, newLinks chan<- LinkTask) {
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case url, ok := <-jobs:
+		case task, ok := <-jobs:
 			if !ok {
 				return
 			}
@@ -231,14 +272,13 @@ func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- stri
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("Worker panic while processing", "Url", url, "Error", r)
-						
+						slog.Error("Worker panic while processing", "Url", task.URL, "Error", r)
 					}
 				}()
 
-				links, title, content := s.AnalysisLink(ctx, url, 3)
+				links, title, content := s.AnalysisLink(ctx, task.URL, task.Depth)
 				select {
-				case result <- fmt.Sprintf("✅ Worker %s done: %d links, title: %s", url, len(links), title):
+				case result <- fmt.Sprintf("✅ Worker %s done: %d links, title: %s", task.URL, len(links), title):
 					slog.Info(" Worker done", "Count links", len(links), "Title", title)
 				case <-ctx.Done():
 					return
@@ -263,23 +303,23 @@ func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- stri
 	}
 }
 
-func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int) ([]string, string, string) {
+
+func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int) ([]LinkTask, string, string) {
 	if depth <= 0 {
-		return []string{}, "", ""
+		return []LinkTask{}, "", ""
 	}
 	if s.storageClient == nil {
 		slog.Info(" Storage client is nil for URL", "Url", url)
-		return []string{}, "", ""
+		return []LinkTask{}, "", ""
 	}
 	contents, titles, err := s.CheckPageExists(ctx, url)
 	if err == nil && contents != "" {
-
 		slog.Info(" Page already exists (from cache/storage)", "Url", url)
-		return []string{}, titles, contents
+		return []LinkTask{}, titles, contents
 	}
 
 	res, err := http.Get(url)
-	var links []string
+	var links []LinkTask
 	var titleBuilder, contentBuilder strings.Builder
 
 	if err != nil {
@@ -299,7 +339,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		return links, "", ""
 	}
 
-	slog.Info("\nLinks found: %s\n", "Url", url)
+	slog.Info("Links found", "Url", url)
 
 	doc.Find("a").Each(func(i int, sel *goquery.Selection) {
 		href, exists := sel.Attr("href")
@@ -312,7 +352,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		if exists && href != "" {
 			text := strings.TrimSpace(sel.Text())
 			slog.Info("Link", "Href", href, "Text", text)
-			links = append(links, href)
+			links = append(links, LinkTask{URL: href, Depth: depth - 1})
 		}
 	})
 
@@ -370,17 +410,15 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	if err != nil {
 		slog.Error("Failed to save page to storage", "Error", err)
 		return links, title, content
-	} else {
-		s.filter.Add([]byte(url))
-		s.urlCache.Add(url, &CachedPage{
-			Title:   title,
-			Content: content,
-		})
-		slog.Info("Page saved to storage: %s", "Url", url)
 	}
 
-	slog.Info("Content found", "Title", title, "Content", content)
-	slog.Any("Links", links)
+	s.filter.Add([]byte(url))
+	s.urlCache.Add(url, &CachedPage{
+		Title:   title,
+		Content: content,
+	})
+	slog.Info("Page saved to storage", "Url", url)
+
 	return links, title, content
 }
 
@@ -400,28 +438,34 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 		maxPages = int(req.MaxPages)
 	}
 	if maxPages <= 0 {
-    	return nil, fmt.Errorf("invalid max_pages: must be greater than 0, got %d", maxPages)
+		return nil, fmt.Errorf("invalid max_pages: must be greater than 0, got %d", maxPages)
 	}
 
-	jobs := make(chan string, 5000)
+	startDepth := config.MAX_DEPTH
+	if startDepth <= 0 {
+		return nil, fmt.Errorf("invalid max_depth in config: must be greater than 0, got %d", startDepth)
+	}
+
+	jobs := make(chan LinkTask, 5000)
 	results := make(chan string, 1000)
-	newLinks := make(chan string, 10000)
+	newLinks := make(chan LinkTask, 10000)
 	ALLcontent := make(chan string, 10000)
 
 	if len(req.SeedUrls) > 0 {
-
 		s.queueClient.ClearQueue(ctx, &queue.ClearQueueRequest{
 			QueueName: "crawl_queue",
 		})
 
-		err := s.push_work(ctx, "crawl_queue", req.SeedUrls)
-		if err != nil {
-			
+		seedTasks := make([]LinkTask, 0, len(req.SeedUrls))
+		for _, u := range req.SeedUrls {
+			seedTasks = append(seedTasks, LinkTask{URL: u, Depth: startDepth})
+		}
+
+		if err := s.pushLinks(ctx, "crawl_queue", seedTasks); err != nil {
 			slog.Warn("Failed to add seed URLs", "Error", err)
 			return nil, fmt.Errorf("failed to add seed URLs: %v", err)
-		} else {
-			slog.Info("Added seed URLs to queue", "Count_links", len(req.SeedUrls))
 		}
+		slog.Info("Added seed URLs to queue", "Count_links", len(req.SeedUrls), "Depth", startDepth)
 	}
 
 	for w := 1; w <= config.WORKER_POOL_SIZE; w++ {
@@ -477,8 +521,8 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 				message, err := s.TakeJobs(ctx, jobs, "crawl_queue")
 				if err != nil {
 					slog.Error("Error TakeJobs", "Error", err)
-					idleCounter++ 
-    				continue 
+					idleCounter++
+					continue
 				} else if message != "Queue is empty" {
 					slog.Info("TakeJobs", "Info", message)
 					idleCounter = 0
@@ -486,26 +530,32 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 					idleCounter++
 				}
 
-			case link := <-newLinks:
+			case task := <-newLinks:
 				idleCounter = 0
 
-				if state.ShouldProcess(link) {
-					err := s.push_work(ctx, "crawl_queue", []string{link})
+				if task.Depth > 0 && state.ShouldProcess(task.URL) {
+					err := s.pushLinks(ctx, "crawl_queue", []LinkTask{task})
 					if err != nil {
 						for attempt := 1; attempt <= config.MAX_RETRIES; attempt++ {
-							slog.Warn("Retrying push_work", "Attempt", attempt, "Url", link)
-							time.Sleep(time.Duration(config.RETRY_DELAY) * time.Second)
-							err = s.push_work(ctx, "crawl_queue", []string{link})
+							slog.Warn("Retrying push_work", "Attempt", attempt, "Url", task.URL)
+
+							select {
+							case <-time.After(time.Duration(config.RETRY_DELAY) * time.Second):
+							case <-ctx.Done():
+								return
+							}
+
+							err = s.pushLinks(ctx, "crawl_queue", []LinkTask{task})
 							if err == nil {
-								slog.Info("Successfully pushed link after retry", "Url", link)
+								slog.Info("Successfully pushed link after retry", "Url", task.URL)
 								break
 							}
 						}
-						if err != nil {				
-							slog.Error("Error push_work: %v", "Error", err)
+						if err != nil {
+							slog.Error("Error push_work after retries", "Error", err, "Url", task.URL)
 						}
 					} else {
-						slog.Info("Added page", "State", state.processed, "MaxPages", maxPages, "Url", link)
+						slog.Info("Added page", "State", state.processed, "MaxPages", maxPages, "Url", task.URL, "Depth", task.Depth)
 					}
 				}
 
@@ -540,29 +590,30 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 		Status:  fmt.Sprintf("Completed: %d pages", state.processed),
 	}, nil
 }
+
 func main() {
-	queueConn, err := grpc.Dial("localhost:50052", grpc.WithInsecure())
 	logger := slog.New(slog.NewJSONHandler(os.Stdout,
 		&slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
+
+	queueConn, err := grpc.Dial("localhost:50052", grpc.WithInsecure())
 	if err != nil {
-		
 		slog.Error("Failed to connect to queue", "Error", err)
-		return 
+		os.Exit(1)
 	}
 	defer queueConn.Close()
 
 	storageConn, err := grpc.Dial("localhost:50053", grpc.WithInsecure())
 	if err != nil {
 		slog.Error("Failed to connect to storage:", "Error", err)
-		return 
+		os.Exit(1)
 	}
 	defer storageConn.Close()
 
 	config, err := Get_Config()
 	if err != nil {
 		slog.Error("Failed to load config", "Error", err)
-		return 
+		os.Exit(1)
 	}
 
 	crawlerServer := NewCrawlerServer(
@@ -573,14 +624,14 @@ func main() {
 
 	if crawlerServer.storageClient == nil {
 		slog.Error("Storage client is nil!")
-		return 
+		os.Exit(1)
 	}
 	slog.Info("Storage client initialized")
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		slog.Error("Failed to listen", "Error", err)
-		return 
+		os.Exit(1)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -600,5 +651,6 @@ func main() {
 	slog.Info("gRPC Server starting on port 50051...")
 	if err := grpcServer.Serve(lis); err != nil {
 		slog.Error("Server failed", "Error", err)
+		os.Exit(1)
 	}
 }

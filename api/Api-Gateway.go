@@ -14,7 +14,7 @@ import (
 
 type Link struct {
 	Url   string `json:"url"`
-	Depth string `json:"depth"`
+	
 }
 
 var crawlerClient pb.CrawlerServiceClient
@@ -45,6 +45,7 @@ func Analysis_Link(c *gin.Context) {
 
 	resp, err := crawlerClient.StartCrawling(ctx, &pb.StartCrawlingRequest{
 		SeedUrls: []string{data.Url},
+		
 	})
 
 	if err != nil {
