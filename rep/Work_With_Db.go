@@ -159,8 +159,7 @@ func (s *Storage_Server) GetPage(ctx context.Context, req *pb.GetPageRequest) (*
 
 
 
-func stringPtr(s string) *string { return &s }
-func intPtr(i int) *int { return &i }
+
 func timePtr(t time.Time) *time.Time { return &t }
 
 func getStringValue(ptr *string) string {
