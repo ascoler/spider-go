@@ -7,7 +7,7 @@ import (
 	pb "local/crawler/gen/crawler"
 	queue "local/crawler/gen/queue"
 	storage "local/crawler/gen/storage"
-
+	
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,10 +15,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"net/url"
 
 	"os/signal"
 	"syscall"
-
+	"github.com/temoto/robotstxt"
 	"github.com/PuerkitoBio/goquery"
 	lru "github.com/hashicorp/golang-lru/v2"
 	boom "github.com/tylertreat/BoomFilters"
@@ -34,6 +35,7 @@ type CrawlerServer struct {
 	queueClient   queue.QueueServiceClient
 	storageClient storage.StorageServiceClient
 	config        Config
+	robotCahche *lru.Cache[string, *robotstxt.Group]
 	urlCache      *lru.Cache[string, *CachedPage]
 	filter        *boom.BloomFilter
 }
@@ -80,6 +82,7 @@ func decodeTask(s string) (LinkTask, error) {
 type CrawlState struct {
 	mu        sync.RWMutex
 	visited   map[string]bool
+	
 	processed int
 	maxpages  int
 }
@@ -304,26 +307,60 @@ func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- stri
 }
 
 
-func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int) ([]LinkTask, string, string) {
+func (s *CrawlerServer) AnalysisLink(ctx context.Context, urls string, depth int) ([]LinkTask, string, string) {
+	path,err := url.Parse(urls)
+	if err != nil {
+		slog.Error("Failed to parse URL", "Url", urls, "Error", err)
+		return []LinkTask{}, "", ""
+	}
+	host := path.Hostname()
+	if s.robotCahche.Contains(host) {
+		robotsData, _ := s.robotCahche.Get(host)
+		if !robotsData.Test(path.Path) {
+			slog.Info("Access denied by robots.txt", "Url", urls)
+			return []LinkTask{}, "", ""
+		}
+	}else {
+    robotsData, err := getRobotsTxt(path.Scheme + "://" + host + "/robots.txt")
+
+    if err != nil {
+        slog.Error("Failed to get robots.txt", "Url", urls, "Error", err)
+    } else {
+        s.robotCahche.Add(host, robotsData) // кладём в кэш только если реально получили
+        if !robotsData.Test(path.Path) {
+            slog.Info("Access denied by robots.txt", "Url", urls)
+            return []LinkTask{}, "", ""
+        }
+    }
+}
+	
+		
+	
+
+	
+	
+	
+	
+	
 	if depth <= 0 {
 		return []LinkTask{}, "", ""
 	}
 	if s.storageClient == nil {
-		slog.Info(" Storage client is nil for URL", "Url", url)
+		slog.Info(" Storage client is nil for URL", "Url", urls)
 		return []LinkTask{}, "", ""
 	}
-	contents, titles, err := s.CheckPageExists(ctx, url)
+	contents, titles, err := s.CheckPageExists(ctx, urls)
 	if err == nil && contents != "" {
-		slog.Info(" Page already exists (from cache/storage)", "Url", url)
+		slog.Info(" Page already exists (from cache/storage)", "Url", urls)
 		return []LinkTask{}, titles, contents
 	}
 
-	res, err := http.Get(url)
+	res, err := http.Get(urls)
 	var links []LinkTask
 	var titleBuilder, contentBuilder strings.Builder
 
 	if err != nil {
-		slog.Info("Failed to connect to the target page", "Url", url, "Error", err)
+		slog.Info("Failed to connect to the target page", "Url", urls, "Error", err)
 		return links, "", ""
 	}
 	defer res.Body.Close()
@@ -335,17 +372,17 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
-		slog.Warn("Failed to parse the target page", "Url", url, "Error", err)
+		slog.Warn("Failed to parse the target page", "Url", urls, "Error", err)
 		return links, "", ""
 	}
 
-	slog.Info("Links found", "Url", url)
+	slog.Info("Links found", "Url", urls)
 
 	doc.Find("a").Each(func(i int, sel *goquery.Selection) {
 		href, exists := sel.Attr("href")
 
 		if !ResolveLink(href) {
-			baseURL := strings.TrimSuffix(url, "/")
+			baseURL := strings.TrimSuffix(urls, "/")
 			href = baseURL + "/" + strings.TrimPrefix(href, "/")
 		}
 
@@ -373,7 +410,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 	doc.Find("img").Each(func(i int, sel *goquery.Selection) {
 		src, exists := sel.Attr("src")
 		if !ResolveLink(src) {
-			src = url + src
+			src = urls + src
 		}
 		if exists {
 			alt, _ := sel.Attr("alt")
@@ -398,7 +435,7 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 
 	_, err = s.storageClient.SavePage(ctx, &storage.SavePageRequest{
 		Page: &storage.Page{
-			Url:         url,
+			Url:         urls,
 			StatusCode:  int32(res.StatusCode),
 			Title:       title,
 			ContentText: content,
@@ -412,12 +449,12 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, url string, depth int)
 		return links, title, content
 	}
 
-	s.filter.Add([]byte(url))
-	s.urlCache.Add(url, &CachedPage{
+	s.filter.Add([]byte(urls))
+	s.urlCache.Add(urls, &CachedPage{
 		Title:   title,
 		Content: content,
 	})
-	slog.Info("Page saved to storage", "Url", url)
+	slog.Info("Page saved to storage", "Url", urls)
 
 	return links, title, content
 }

@@ -18,6 +18,7 @@ type Queue struct {
 	redisClient *redis.Client
 }
 
+
 func (q *Queue) Push(ctx context.Context, req *pb.PushRequest) (*pb.PushResponse, error) {
 	for _, url := range req.Urls {
 		err := q.redisClient.LPush(ctx, req.QueueName, url).Err()

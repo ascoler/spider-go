@@ -1,7 +1,7 @@
 package main
 import (
 	"github.com/temoto/robotstxt"
-	"time/rate"
+	
 	"log/slog"
 )
 
