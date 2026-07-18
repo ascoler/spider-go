@@ -65,6 +65,28 @@ func (q *Queue) GetQueueSize(ctx context.Context, req *pb.QueueSizeRequest) (*pb
 		Success:    true,
 	}, nil
 }
+
+func (q *Queue) AddActiveDomain(ctx context.Context, req *pb.AddActiveDomainRequest) (*pb.AddActiveDomainResponse, error) {
+	err := q.redisClient.SAdd(ctx, "active_domains", req.Domain).Err()
+	if err != nil {
+		return &pb.AddActiveDomainResponse{Success: false}, err
+	}
+	return &pb.AddActiveDomainResponse{Success: true}, nil
+
+
+
+}
+
+func (q *Queue) GetActiveDomains(ctx context.Context, req *pb.GetActiveDomainsRequest) (*pb.GetActiveDomainsResponse, error) {
+	domains, err := q.redisClient.SMembers(ctx, "active_domains").Result()
+	if err != nil {
+		return &pb.GetActiveDomainsResponse{Success: false}, err
+	}
+	return &pb.GetActiveDomainsResponse{
+		Domains: domains,
+		Success: true,
+	}, nil
+}
 func (q *Queue) ClearQueue(ctx context.Context, req *pb.ClearQueueRequest) (*pb.ClearQueueResponse, error) {
     err := q.redisClient.Del(ctx, req.QueueName).Err()
     if err != nil {

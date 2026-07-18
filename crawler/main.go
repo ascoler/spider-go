@@ -7,21 +7,22 @@ import (
 	pb "local/crawler/gen/crawler"
 	queue "local/crawler/gen/queue"
 	storage "local/crawler/gen/storage"
-	
+
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"net/url"
 
 	"os/signal"
 	"syscall"
-	"github.com/temoto/robotstxt"
+
 	"github.com/PuerkitoBio/goquery"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/temoto/robotstxt"
 	boom "github.com/tylertreat/BoomFilters"
 	"google.golang.org/grpc"
 )
@@ -32,12 +33,14 @@ type CachedPage struct {
 }
 type CrawlerServer struct {
 	pb.UnimplementedCrawlerServiceServer
-	queueClient   queue.QueueServiceClient
-	storageClient storage.StorageServiceClient
-	config        Config
-	robotCahche *lru.Cache[string, *robotstxt.Group]
-	urlCache      *lru.Cache[string, *CachedPage]
-	filter        *boom.BloomFilter
+	queueClient     queue.QueueServiceClient
+	storageClient   storage.StorageServiceClient
+	config          Config
+	robotCahche     *lru.Cache[string, *robotstxt.Group]
+	urlCache        *lru.Cache[string, *CachedPage]
+	filter          *boom.BloomFilter
+	activeDomainsMu sync.Mutex
+	activeDomains   map[string]bool
 }
 
 func NewCrawlerServer(
@@ -47,7 +50,11 @@ func NewCrawlerServer(
 
 ) *CrawlerServer {
 	cache, err := lru.New[string, *CachedPage](50000)
+	robotsCache, err1 := lru.New[string, *robotstxt.Group](10000)
 	if err != nil {
+		panic(err)
+	}
+	if err1 != nil {
 		panic(err)
 	}
 	filter := boom.NewBloomFilter(100000, 0.01)
@@ -57,6 +64,8 @@ func NewCrawlerServer(
 		config:        config,
 		urlCache:      cache,
 		filter:        filter,
+		activeDomains: make(map[string]bool),
+		robotCahche:   robotsCache,
 	}
 }
 
@@ -80,9 +89,9 @@ func decodeTask(s string) (LinkTask, error) {
 }
 
 type CrawlState struct {
-	mu        sync.RWMutex
-	visited   map[string]bool
-	
+	mu      sync.RWMutex
+	visited map[string]bool
+
 	processed int
 	maxpages  int
 }
@@ -137,6 +146,46 @@ func Get_Config() (Config, error) {
 	return config, nil
 }
 
+func (s *CrawlerServer) QueueIsEmpty(ctx context.Context, domain string) bool {
+	resp, err := s.queueClient.GetQueueSize(ctx, &queue.QueueSizeRequest{
+		QueueName: "crawl_queue:" + domain,
+	})
+	if err != nil {
+		slog.Error("Error get size queue", "Error", err)
+		return true
+	}
+	return resp.Size == 0
+
+}
+func (s *CrawlerServer) pickNextActiveDomain(ctx context.Context, currentDomain string) string {
+
+	if currentDomain != "" && !s.QueueIsEmpty(ctx, currentDomain) {
+		return currentDomain
+	}
+
+	resp, err := s.queueClient.GetActiveDomains(ctx, &queue.GetActiveDomainsRequest{})
+	if err != nil {
+		slog.Error("Failed to get active domains", "Error", err)
+		return currentDomain
+	}
+
+	for _, domain := range resp.Domains {
+		if domain == currentDomain {
+			continue
+		}
+		if !s.QueueIsEmpty(ctx, domain) {
+			slog.Info("Switching active domain", "From", currentDomain, "To", domain)
+			return domain
+		}
+	}
+
+	if currentDomain != "" && !s.QueueIsEmpty(ctx, currentDomain) {
+		return currentDomain
+	}
+
+	return ""
+}
+
 func (s *CrawlerServer) CheckPageExists(ctx context.Context, url string) (string, string, error) {
 
 	if cached, ok := s.urlCache.Get(url); ok {
@@ -170,7 +219,6 @@ func ResolveLink(url string) bool {
 	return strings.HasPrefix(url, "http://") ||
 		strings.HasPrefix(url, "https://")
 }
-
 
 func (s *CrawlerServer) pushLinks(ctx context.Context, queueName string, tasks []LinkTask) error {
 	encoded := make([]string, 0, len(tasks))
@@ -306,9 +354,9 @@ func (s *CrawlerServer) CreateWorker(ctx context.Context, ALLcontent chan<- stri
 	}
 }
 
-
 func (s *CrawlerServer) AnalysisLink(ctx context.Context, urls string, depth int) ([]LinkTask, string, string) {
-	path,err := url.Parse(urls)
+	path, err := url.Parse(urls)
+
 	if err != nil {
 		slog.Error("Failed to parse URL", "Url", urls, "Error", err)
 		return []LinkTask{}, "", ""
@@ -320,28 +368,40 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, urls string, depth int
 			slog.Info("Access denied by robots.txt", "Url", urls)
 			return []LinkTask{}, "", ""
 		}
-	}else {
-    robotsData, err := getRobotsTxt(path.Scheme + "://" + host + "/robots.txt")
+	} else {
+		robotsData, err := getRobotsTxt(path.Scheme + "://" + host + "/robots.txt")
 
-    if err != nil {
-        slog.Error("Failed to get robots.txt", "Url", urls, "Error", err)
-    } else {
-        s.robotCahche.Add(host, robotsData) // кладём в кэш только если реально получили
-        if !robotsData.Test(path.Path) {
-            slog.Info("Access denied by robots.txt", "Url", urls)
-            return []LinkTask{}, "", ""
-        }
-    }
-}
-	
-		
-	
+		if err != nil {
+			slog.Error("Failed to get robots.txt", "Url", urls, "Error", err)
+		} else {
+			s.robotCahche.Add(host, robotsData)
+			if !robotsData.Test(path.Path) {
+				slog.Info("Access denied by robots.txt", "Url", urls)
+				return []LinkTask{}, "", ""
+			}
+		}
+	}
+	if !s.activeDomains[host] {
+		s.activeDomainsMu.Lock()
+		alreadyActive := s.activeDomains[host]
+		if !alreadyActive {
+			s.activeDomains[host] = true
+		}
+		s.activeDomainsMu.Unlock()
 
-	
-	
-	
-	
-	
+		if !alreadyActive {
+			_, err := s.queueClient.AddActiveDomain(ctx, &queue.AddActiveDomainRequest{
+				Domain: host,
+			})
+			if err != nil {
+				slog.Error("Failed to add active domain", "Domain", host, "Error", err)
+			} else {
+				slog.Info("Added active domain", "Domain", host)
+			}
+		}
+
+	}
+
 	if depth <= 0 {
 		return []LinkTask{}, "", ""
 	}
@@ -489,20 +549,45 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 	ALLcontent := make(chan string, 10000)
 
 	if len(req.SeedUrls) > 0 {
-		s.queueClient.ClearQueue(ctx, &queue.ClearQueueRequest{
-			QueueName: "crawl_queue",
-		})
-
 		seedTasks := make([]LinkTask, 0, len(req.SeedUrls))
 		for _, u := range req.SeedUrls {
 			seedTasks = append(seedTasks, LinkTask{URL: u, Depth: startDepth})
 		}
 
-		if err := s.pushLinks(ctx, "crawl_queue", seedTasks); err != nil {
-			slog.Warn("Failed to add seed URLs", "Error", err)
-			return nil, fmt.Errorf("failed to add seed URLs: %v", err)
+		// группируем по домену — на каждый домен своя очередь
+		byDomain := make(map[string][]LinkTask)
+		for _, t := range seedTasks {
+			parsed, err := url.Parse(t.URL)
+			if err != nil {
+				slog.Error("Invalid seed URL", "Url", t.URL, "Error", err)
+				continue
+			}
+			domain := parsed.Hostname()
+			byDomain[domain] = append(byDomain[domain], t)
 		}
-		slog.Info("Added seed URLs to queue", "Count_links", len(req.SeedUrls), "Depth", startDepth)
+
+		for domain, tasks := range byDomain {
+			queueName := "crawl_queue:" + domain
+
+			
+			s.queueClient.ClearQueue(ctx, &queue.ClearQueueRequest{
+				QueueName: queueName,
+			})
+
+			if err := s.pushLinks(ctx, queueName, tasks); err != nil {
+				slog.Warn("Failed to add seed URLs", "Domain", domain, "Error", err)
+				return nil, fmt.Errorf("failed to add seed URLs for domain %s: %v", domain, err)
+			}
+
+			
+			if _, err := s.queueClient.AddActiveDomain(ctx, &queue.AddActiveDomainRequest{
+				Domain: domain,
+			}); err != nil {
+				slog.Error("Failed to register seed domain as active", "Domain", domain, "Error", err)
+			}
+
+			slog.Info("Added seed URLs to queue", "Domain", domain, "Count_links", len(tasks), "Depth", startDepth)
+		}
 	}
 
 	for w := 1; w <= config.WORKER_POOL_SIZE; w++ {
@@ -539,7 +624,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 	}
 
 	done := make(chan bool)
-
+	var currentDomain string
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -555,7 +640,12 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 				return
 
 			case <-ticker.C:
-				message, err := s.TakeJobs(ctx, jobs, "crawl_queue")
+				currentDomain = s.pickNextActiveDomain(ctx, currentDomain)
+				if currentDomain == "" {
+					idleCounter++
+					continue
+				}
+				message, err := s.TakeJobs(ctx, jobs, "crawl_queue:"+currentDomain)
 				if err != nil {
 					slog.Error("Error TakeJobs", "Error", err)
 					idleCounter++
@@ -571,7 +661,15 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 				idleCounter = 0
 
 				if task.Depth > 0 && state.ShouldProcess(task.URL) {
-					err := s.pushLinks(ctx, "crawl_queue", []LinkTask{task})
+					parsed, parseErr := url.Parse(task.URL)
+					if parseErr != nil {
+						slog.Error("Failed to parse URL", "Url", task.URL, "Error", parseErr)
+						break
+					}
+					domain := parsed.Hostname()
+					queueName := "crawl_queue:" + domain
+
+					err := s.pushLinks(ctx, queueName, []LinkTask{task})
 					if err != nil {
 						for attempt := 1; attempt <= config.MAX_RETRIES; attempt++ {
 							slog.Warn("Retrying push_work", "Attempt", attempt, "Url", task.URL)
@@ -582,7 +680,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 								return
 							}
 
-							err = s.pushLinks(ctx, "crawl_queue", []LinkTask{task})
+							err = s.pushLinks(ctx, queueName, []LinkTask{task})
 							if err == nil {
 								slog.Info("Successfully pushed link after retry", "Url", task.URL)
 								break
@@ -592,7 +690,7 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 							slog.Error("Error push_work after retries", "Error", err, "Url", task.URL)
 						}
 					} else {
-						slog.Info("Added page", "State", state.processed, "MaxPages", maxPages, "Url", task.URL, "Depth", task.Depth)
+						slog.Info("Added page", "State", state.processed, "MaxPages", maxPages, "Url", task.URL, "Domain", domain, "Depth", task.Depth)
 					}
 				}
 
