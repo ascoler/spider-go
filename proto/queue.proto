@@ -44,10 +44,24 @@ message ClearQueueResponse {
   bool success = 1;
   int32 items_removed = 2;
 }
+message GetActiveDomainsResponse{
+    repeated string domains = 1;
+    bool success = 2;
+}
+message AddActiveDomainResponse{
+  bool success = 1;
 
+}
+message GetActiveDomainsRequest {}
+
+message AddActiveDomainRequest {
+  string domain = 1;
+}
 service QueueService {
   rpc Push(PushRequest) returns (PushResponse);
   rpc Pop(PopRequest) returns (PopResponse);
   rpc GetQueueSize(QueueSizeRequest) returns (QueueSizeResponse);
   rpc ClearQueue(ClearQueueRequest) returns (ClearQueueResponse);
+  rpc GetActiveDomains(GetActiveDomainsRequest) returns (GetActiveDomainsResponse);
+  rpc AddActiveDomain(AddActiveDomainRequest) returns (AddActiveDomainResponse);
 }
