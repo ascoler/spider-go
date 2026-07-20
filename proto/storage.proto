@@ -43,10 +43,11 @@ message Page {
   string title = 5;
   string content_text = 6;
   int32 depth = 7;
-  bool is_processed = 8;
-  google.protobuf.Timestamp created_at = 9;
-  google.protobuf.Timestamp updated_at = 10;
-  google.protobuf.Timestamp visited_at = 11;
+  string contenthash = 8;
+  bool is_processed = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+  google.protobuf.Timestamp visited_at = 12;
 }
 
 service StorageService {

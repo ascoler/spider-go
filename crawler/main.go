@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	pb "local/crawler/gen/crawler"
@@ -55,7 +57,7 @@ func NewCrawlerServer(
 		panic(err)
 	}
 	if err1 != nil {
-		panic(err)
+		panic(err1)
 	}
 	filter := boom.NewBloomFilter(100000, 0.01)
 	return &CrawlerServer{
@@ -96,6 +98,12 @@ type CrawlState struct {
 	maxpages  int
 }
 
+func hashContent(content string) string {
+	h := sha256.New()
+	h.Write([]byte(content))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func (s *CrawlState) ShouldProcess(url string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -108,7 +116,7 @@ func (s *CrawlState) ShouldProcess(url string) bool {
 	}
 	s.visited[url] = true
 	s.processed++
-	return true
+	return true	
 }
 
 type Config struct {
@@ -492,13 +500,14 @@ func (s *CrawlerServer) AnalysisLink(ctx context.Context, urls string, depth int
 
 	title := titleBuilder.String()
 	content := strings.TrimSpace(contentBuilder.String())
-
+	hash := hashContent(content)
 	_, err = s.storageClient.SavePage(ctx, &storage.SavePageRequest{
 		Page: &storage.Page{
 			Url:         urls,
 			StatusCode:  int32(res.StatusCode),
 			Title:       title,
 			ContentText: content,
+			Contenthash: hash,
 			Depth:       int32(depth),
 			IsProcessed: true,
 		},
@@ -569,7 +578,6 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 		for domain, tasks := range byDomain {
 			queueName := "crawl_queue:" + domain
 
-			
 			s.queueClient.ClearQueue(ctx, &queue.ClearQueueRequest{
 				QueueName: queueName,
 			})
@@ -579,7 +587,6 @@ func (s *CrawlerServer) StartCrawling(parentCtx context.Context, req *pb.StartCr
 				return nil, fmt.Errorf("failed to add seed URLs for domain %s: %v", domain, err)
 			}
 
-			
 			if _, err := s.queueClient.AddActiveDomain(ctx, &queue.AddActiveDomainRequest{
 				Domain: domain,
 			}); err != nil {

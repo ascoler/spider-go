@@ -30,6 +30,7 @@ type Page struct {
     Title       *string   `gorm:"type:text;index"`
     ContentText *string   `gorm:"type:text"`
     Depth       int       `gorm:"default:0"`
+    ContentHash *string   `gorm:"type:varchar(64);index"`
     CreatedAt   time.Time `gorm:"index"` 
     UpdatedAt   time.Time `gorm:"index"` 
     VisitedAt   *time.Time
@@ -56,14 +57,29 @@ func (s *Storage_Server) SavePage(ctx context.Context, req *pb.SavePageRequest) 
             PageId:  fmt.Sprintf("%d", existing.ID),
             Message: "page already exists",
         }, nil
-    }
-    if !errors.Is(err, gorm.ErrRecordNotFound) {
+    }else if !errors.Is(err, gorm.ErrRecordNotFound) {
         
         return &pb.SavePageResponse{
             Success: false,
             Message: fmt.Sprintf("database error: %v", err),
         }, nil
     }
+    dubl := s.db.Where("content_hash = ?", page.GetContenthash()).First(&existing).Error
+    if dubl == nil {
+        return &pb.SavePageResponse{
+            Success: true,
+            PageId:  fmt.Sprintf("%d", existing.ID),
+            Message: "page with the same content hash already exists",
+        }, nil
+    }else if  !errors.Is(dubl, gorm.ErrRecordNotFound) {
+        
+        return &pb.SavePageResponse{
+            Success: false,
+            Message: fmt.Sprintf("database error: %v", dubl),
+        }, nil
+    }
+    
+    
 
     
     statusCode := int(page.GetStatusCode())
@@ -145,6 +161,7 @@ func (s *Storage_Server) GetPage(ctx context.Context, req *pb.GetPageRequest) (*
         Title:       getStringValue(page.Title),
         ContentText: getStringValue(page.ContentText),
         Depth:       int32(page.Depth),
+        Contenthash: getStringValue(page.ContentHash),
         IsProcessed: true,
         CreatedAt:   timeToTimestamp(page.CreatedAt),
         UpdatedAt:   timeToTimestamp(page.UpdatedAt),
