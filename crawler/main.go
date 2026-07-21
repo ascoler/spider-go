@@ -117,6 +117,7 @@ func (s *CrawlState) ShouldProcess(url string) bool {
 	s.visited[url] = true
 	s.processed++
 	return true	
+	
 }
 
 type Config struct {
