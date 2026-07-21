@@ -1,4 +1,4 @@
-# spider-go
+# Spider-go
 
 
 ## What?
@@ -6,8 +6,7 @@
 WebCrawler on golang
 
 ## Architecture
-
-![Architecture diagram](architecture.svg)
+<img width="2200" height="1720" alt="изображение" src="https://github.com/user-attachments/assets/952f7c55-2325-4cfb-9196-0a47819dd9dd" />
 
 The system is split into four processes:
 
@@ -44,7 +43,7 @@ Each service is its own binary and can be deployed/restarted independently. They
 ### Setup
 
 ```bash
-git clone https://github.com/<your-username>/spider-go.git
+git clone https://github.com/ascoler/spider-go.git
 cd spider-go
 go mod tidy
 ```
